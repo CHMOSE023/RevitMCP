@@ -125,5 +125,54 @@ namespace RevitMCP.Tooling.Tests
             // 清理失败不该把一次成功的导出拖成失败
             ExportPaths.SafeDelete(Path.Combine(_root, "never-existed"));
         }
+
+        // ==================== [M10] 按调用点传入的扩展名白名单 ====================
+
+        private string ResolveProject(string fileName) =>
+            ExportPaths.Resolve(_root, fileName, ".rvt", ExportPaths.ProjectExtensions);
+
+        [Fact]
+        public void ProjectWhitelistAcceptsRvt()
+        {
+            Assert.Equal(Path.Combine(_root, "办公楼.rvt"), ResolveProject("办公楼.rvt"));
+        }
+
+        [Fact]
+        public void ProjectWhitelistFillsInTheDefaultExtension()
+        {
+            Assert.EndsWith(".rvt", ResolveProject("办公楼"));
+        }
+
+        [Theory]
+        [InlineData("plan.png")]
+        [InlineData("payload.exe")]
+        public void ProjectWhitelistRejectsEverythingElse(string name)
+        {
+            // 两组白名单互不放行：能存模型的工具不该顺手能写图片，反之亦然
+            Rejects(() => ResolveProject(name), "不支持的文件扩展名");
+        }
+
+        [Fact]
+        public void ImageWhitelistStillRejectsRvt()
+        {
+            Rejects(() => Resolve("model.rvt"), "不支持的文件扩展名");
+        }
+
+        [Theory]
+        [InlineData("../escape.rvt")]
+        [InlineData("sub/model.rvt")]
+        [InlineData("C:\\windows\\evil.rvt")]
+        public void ProjectWhitelistKeepsEveryOtherBoundary(string name)
+        {
+            // 换一组扩展名不该顺带松开目录边界——这些拒绝对两个重载必须一样
+            Rejects(() => ResolveProject(name));
+        }
+
+        [Fact]
+        public void EmptyWhitelistIsRefused()
+        {
+            // 调用点忘了声明白名单时要当场失败，而不是默默放行一切
+            Rejects(() => ExportPaths.Resolve(_root, "x.rvt", ".rvt", new string[0]), "未声明允许的扩展名");
+        }
     }
 }
