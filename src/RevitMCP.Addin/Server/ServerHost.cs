@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -9,6 +10,7 @@ using RevitMCP.Addin.Configuration;
 using RevitMCP.Addin.Diagnostics;
 using RevitMCP.Addin.Dispatcher;
 using RevitMCP.Addin.Execution;
+using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using RevitMCP.Addin.Tools;
 using RevitMCP.Protocol.Json;
@@ -216,7 +218,48 @@ namespace RevitMCP.Addin.Server
                 Audit = entry => Log.Audit(entry.ToString())
             },
             // 写作用域只作用于非只读工具：开事务、装失败预处理、拦模态框（M4）
-            new RevitWriteScope());
+            new RevitWriteScope(),
+            // 活动文档的身份：用户随时可能切换文档，切换后调用方手里的 ID 全部失效（M7）
+            DescribeActiveDocument);
+        }
+
+        /// <summary>
+        /// 描述当前活动文档。由管线在主线程上调用。
+        ///
+        /// Key 要在文档打开期间保持不变、换个文档就不同。已保存的文档用路径，
+        /// 未保存的新文档没有路径，退到标题——Revit 不允许同一会话里出现两个同名的未保存文档
+        /// （它们会是「项目1」「项目2」），所以标题在会话内足够区分。
+        ///
+        /// **不要用对象标识**（`RuntimeHelpers.GetHashCode(document)`）。看着最严谨，实际最错：
+        /// Revit API 是互操作包装，每次访问 <c>ActiveUIDocument.Document</c> 可能拿到
+        /// 一个新的托管包装对象，指向的却是同一个文档——于是每次调用都判定成"换了文档"。
+        /// 实测就是这么炸的：一个没动过的文档反复报"已从「项目1」切换到「项目1」"。
+        ///
+        /// Revit 2019 没有 <c>Document.CreationGUID</c>（那是更高版本才有的），
+        /// 否则它才是这里最合适的东西。
+        /// </summary>
+        private static ContextIdentity DescribeActiveDocument(UIApplication application)
+        {
+            Document document;
+            try { document = application?.ActiveUIDocument?.Document; }
+            catch { return null; }
+
+            if (document == null) return null;
+
+            string title;
+            try { title = document.Title; }
+            catch { title = null; }
+
+            var path = SafePathName(document);
+            var key = !string.IsNullOrEmpty(path) ? path : title;
+
+            return string.IsNullOrEmpty(key) ? null : new ContextIdentity(key, title);
+        }
+
+        private static string SafePathName(Document document)
+        {
+            try { return document.PathName; }
+            catch { return null; }
         }
 
         private string BuildInstructions() =>

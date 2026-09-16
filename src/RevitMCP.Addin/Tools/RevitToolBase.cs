@@ -208,6 +208,9 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("所属标高 ID，没有则为 null")]
         public string LevelId { get; set; }
+
+        [McpParam("到查询点的最近距离，毫米。仅 near 查询时有值")]
+        public double? DistanceMm { get; set; }
     }
 
     public sealed class ParameterValue

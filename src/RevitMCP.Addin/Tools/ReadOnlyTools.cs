@@ -164,10 +164,29 @@ namespace RevitMCP.Addin.Tools
 
     // ==================== 构件查询 ====================
 
+    public sealed class BoxFilter
+    {
+        [McpParam("最小角点，毫米", Required = true)]
+        public Point3D Min { get; set; }
+
+        [McpParam("最大角点，毫米", Required = true)]
+        public Point3D Max { get; set; }
+    }
+
+    public sealed class NearFilter
+    {
+        [McpParam("中心点，毫米", Required = true)]
+        public Point3D Point { get; set; }
+
+        [McpParam("半径，毫米。按构件包围盒到该点的最近距离算", Required = true)]
+        public double RadiusMm { get; set; }
+    }
+
     public sealed class QueryElementsInput
     {
         [McpParam("BuiltInCategory 名，如 OST_Walls、OST_Doors。可省略 OST_ 前缀。" +
-                  "不确定时先调用 revit_list_categories", Required = true)]
+                  "不确定时先调用 revit_list_categories。" +
+                  "给了空间过滤条件时可以省略它，此时会跨类别查")]
         public string Category { get; set; }
 
         [McpParam("true 时只查当前活动视图中可见的构件，默认 false（查整个模型）")]
@@ -175,6 +194,12 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("按构件名过滤（不区分大小写的子串匹配）")]
         public string NameContains { get; set; }
+
+        [McpParam("只返回包围盒与该长方体相交的构件。与 near 只能给一个")]
+        public BoxFilter WithinBox { get; set; }
+
+        [McpParam("只返回该点附近的构件，结果按距离从近到远排列。与 withinBox 只能给一个")]
+        public NearFilter Near { get; set; }
 
         [McpParam("最多返回多少条，默认 100，上限 1000。超出部分通过 truncated 字段告知")]
         public int? Limit { get; set; }
@@ -210,7 +235,19 @@ namespace RevitMCP.Addin.Tools
         {
             var uiDocument = RequireUiDocument(context);
             var document = uiDocument.Document;
-            var category = ParseCategory(input.Category);
+
+            if (input.WithinBox != null && input.Near != null)
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "withinBox 与 near 只能给一个。要找某个范围内的构件用 withinBox，" +
+                    "要找某个位置附近的用 near。");
+
+            var hasSpatial = input.WithinBox != null || input.Near != null;
+
+            // 既不限类别又不限范围，等于把整个模型倒出来。有 limit 兜着也依然是浪费——
+            // 模型拿到一份被截断的全模型清单，什么问题都回答不了
+            if (string.IsNullOrWhiteSpace(input.Category) && !hasSpatial)
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "至少要给一个筛选条件：category（按类别查），或 withinBox / near（按位置查）。");
 
             var limit = Math.Min(Math.Max(input.Limit ?? DefaultLimit, 1), MaxLimit);
 
@@ -228,11 +265,21 @@ namespace RevitMCP.Addin.Tools
                 collector = new FilteredElementCollector(document);
             }
 
-            var matched = collector
-                .OfCategory(category)
-                .WhereElementIsNotElementType()
-                .Where(e => MatchesName(e, input.NameContains))
-                .ToList();
+            if (!string.IsNullOrWhiteSpace(input.Category))
+                collector = collector.OfCategory(ParseCategory(input.Category));
+
+            collector = collector.WhereElementIsNotElementType();
+
+            // 先让 Revit 用包围盒过滤器粗筛——它走的是空间索引，
+            // 比把整个模型拉进托管代码再逐个算距离快得多
+            var outline = BuildOutline(input);
+            if (outline != null) collector = collector.WherePasses(new BoundingBoxIntersectsFilter(outline));
+
+            var named = collector.Where(e => MatchesName(e, input.NameContains));
+
+            var matched = input.Near != null
+                ? RefineByDistance(named, input.Near)
+                : named.Select(e => new Match { Element = e }).ToList();
 
             var output = new QueryElementsOutput
             {
@@ -240,14 +287,101 @@ namespace RevitMCP.Addin.Tools
                 Truncated = matched.Count > limit
             };
 
-            foreach (var element in matched.Take(limit))
+            foreach (var match in matched.Take(limit))
             {
                 context.CancellationToken.ThrowIfCancellationRequested();
-                output.Elements.Add(Summarize(element));
+
+                var summary = Summarize(match.Element);
+                summary.DistanceMm = match.DistanceMm;
+                output.Elements.Add(summary);
             }
 
             output.Returned = output.Elements.Count;
             return output;
+        }
+
+        private sealed class Match
+        {
+            public Element Element;
+            public double? DistanceMm;
+        }
+
+        private static Outline BuildOutline(QueryElementsInput input)
+        {
+            if (input.WithinBox != null)
+            {
+                if (input.WithinBox.Min == null || input.WithinBox.Max == null)
+                    throw new ToolFailureException(McpDomainError.InvalidParameter,
+                        "withinBox 需要 min 和 max 两个角点。");
+
+                var min = input.WithinBox.Min.ToXyz();
+                var max = input.WithinBox.Max.ToXyz();
+
+                // Outline 要求 min 确实在 max 的各分量之下，否则它会拒绝或静默给出空结果
+                return new Outline(
+                    new XYZ(Math.Min(min.X, max.X), Math.Min(min.Y, max.Y), Math.Min(min.Z, max.Z)),
+                    new XYZ(Math.Max(min.X, max.X), Math.Max(min.Y, max.Y), Math.Max(min.Z, max.Z)));
+            }
+
+            if (input.Near == null) return null;
+
+            if (input.Near.Point == null)
+                throw new ToolFailureException(McpDomainError.InvalidParameter, "near 需要 point。");
+
+            if (input.Near.RadiusMm <= 0)
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "near.radiusMm 必须为正，收到 " + input.Near.RadiusMm + "。");
+
+            var center = input.Near.Point.ToXyz();
+            var radius = Units.ToFeet(input.Near.RadiusMm);
+            var offset = new XYZ(radius, radius, radius);
+
+            // 立方体只是粗筛，真正的球形距离在 RefineByDistance 里算
+            return new Outline(center - offset, center + offset);
+        }
+
+        /// <summary>
+        /// 按"包围盒到查询点的最近距离"精筛并排序。
+        ///
+        /// 不用包围盒中心算距离：一面 10 米长的墙，端点就在你脚边、中心却在 5 米开外，
+        /// 按中心算会把它判成"不在附近"。
+        /// </summary>
+        private static List<Match> RefineByDistance(IEnumerable<Element> elements, NearFilter near)
+        {
+            var center = near.Point.ToXyz();
+            var radius = Units.ToFeet(near.RadiusMm);
+            var matches = new List<Match>();
+
+            foreach (var element in elements)
+            {
+                var box = GetGeometryTool.RawBox(element);
+                if (box == null) continue;   // 没有几何的构件谈不上远近
+
+                XYZ min, max;
+                try { GetGeometryTool.Extremes(box, out min, out max); }
+                catch { continue; }
+
+                var distance = DistanceToBox(center, min, max);
+                if (distance > radius) continue;
+
+                matches.Add(new Match
+                {
+                    Element = element,
+                    DistanceMm = Units.Round(Units.FromFeet(distance))
+                });
+            }
+
+            return matches.OrderBy(m => m.DistanceMm ?? double.MaxValue).ToList();
+        }
+
+        /// <summary>点到轴对齐包围盒的最近距离。点在盒内时为 0。</summary>
+        private static double DistanceToBox(XYZ point, XYZ min, XYZ max)
+        {
+            var dx = Math.Max(0, Math.Max(min.X - point.X, point.X - max.X));
+            var dy = Math.Max(0, Math.Max(min.Y - point.Y, point.Y - max.Y));
+            var dz = Math.Max(0, Math.Max(min.Z - point.Z, point.Z - max.Z));
+
+            return Math.Sqrt(dx * dx + dy * dy + dz * dz);
         }
 
         private static bool MatchesName(Element element, string needle)

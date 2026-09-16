@@ -179,7 +179,7 @@ namespace RevitMCP.Addin.Tools
                 if ((segment.P0.Z ?? 0) != 0 || (segment.P1.Z ?? 0) != 0) flattened = true;
 
                 var lengthMm = CreateSupport.Distance(segment.P0, segment.P1);
-                if (lengthMm < Mm.MinLength)
+                if (lengthMm < Units.MinLength)
                     throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
                         "boundary.outerLoop[" + i + "] 的两端相距 " +
                         lengthMm.ToString("0.###", CultureInfo.InvariantCulture) +
@@ -188,8 +188,8 @@ namespace RevitMCP.Addin.Tools
                 // Z 一律压平：面的竖向位置由 levelId + baseOffset 决定，
                 // 边界带着不同的 Z 会让 Revit 认为这个环不共面
                 curves.Add(Line.CreateBound(
-                    Mm.Point(segment.P0.X, segment.P0.Y, 0),
-                    Mm.Point(segment.P1.X, segment.P1.Y, 0)));
+                    Units.Point(segment.P0.X, segment.P0.Y, 0),
+                    Units.Point(segment.P1.X, segment.P1.Y, 0)));
             }
 
             RequireClosed(segments, index);
@@ -253,7 +253,7 @@ namespace RevitMCP.Addin.Tools
             try
             {
                 var parameter = element.get_Parameter(id);
-                if (parameter != null && !parameter.IsReadOnly && parameter.Set(Mm.ToFeet(offsetMm))) return;
+                if (parameter != null && !parameter.IsReadOnly && parameter.Set(Units.ToFeet(offsetMm))) return;
             }
             catch { /* 落到下面的警告 */ }
 

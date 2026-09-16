@@ -26,6 +26,28 @@ namespace RevitMCP.Tooling
         public Action<ToolAuditEntry> Audit { get; set; } = entry => { };
     }
 
+    /// <summary>
+    /// 执行上下文的身份。Revit 这边就是当前的活动文档。
+    ///
+    /// 服务始终操作"活动文档"，而用户随时可能切换它。一旦切换，
+    /// 调用方手里的构件 ID 会突然全部失效——**而它没有任何办法自己察觉**，
+    /// 只会看到一连串莫名其妙的 ELEMENT_NOT_FOUND。
+    /// </summary>
+    public sealed class ContextIdentity
+    {
+        public ContextIdentity(string key, string label)
+        {
+            Key = key;
+            Label = label;
+        }
+
+        /// <summary>用于判断是不是换了上下文。同一个文档必须始终给出同一个 Key。</summary>
+        public string Key { get; }
+
+        /// <summary>给人和模型看的名字。</summary>
+        public string Label { get; }
+    }
+
     /// <summary>工具自己抛出的、带领域错误码的失败。会原样呈现给模型。</summary>
     public sealed class ToolFailureException : Exception
     {
@@ -51,17 +73,56 @@ namespace RevitMCP.Tooling
         private readonly IWorkDispatcher<TContext> _dispatcher;
         private readonly ToolPipelineOptions _options;
         private readonly IWriteScope<TContext> _writeScope;
+        private readonly Func<TContext, ContextIdentity> _contextIdentity;
+
+        // 上一次调用时的上下文身份。跨请求的进程内状态，与客户端无关——
+        // "活动文档换了"是全局事实，不属于某一个会话
+        private readonly object _identityLock = new object();
+        private string _lastIdentityKey;
+        private string _lastIdentityLabel;
 
         public ToolPipeline(
             ToolRegistry<TContext> registry,
             IWorkDispatcher<TContext> dispatcher,
             ToolPipelineOptions options = null,
-            IWriteScope<TContext> writeScope = null)
+            IWriteScope<TContext> writeScope = null,
+            Func<TContext, ContextIdentity> contextIdentity = null)
         {
             _registry = registry ?? throw new ArgumentNullException(nameof(registry));
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _options = options ?? new ToolPipelineOptions();
             _writeScope = writeScope ?? new PassthroughWriteScope<TContext>();
+            _contextIdentity = contextIdentity;
+        }
+
+        /// <summary>
+        /// 比较上下文身份，换了就给出一句提示。只读不写——
+        /// 同一次调用里成功路径和失败路径都要用它，写状态的动作留给 <see cref="CommitIdentity"/>。
+        /// </summary>
+        private string PeekContextSwitch(ContextIdentity identity)
+        {
+            if (identity?.Key == null) return null;
+
+            lock (_identityLock)
+            {
+                // 第一次见到任何上下文都不算"切换"
+                if (_lastIdentityKey == null || _lastIdentityKey == identity.Key) return null;
+
+                return "活动文档已从「" + (_lastIdentityLabel ?? "另一个文档") + "」切换到「" +
+                       (identity.Label ?? "当前文档") + "」。" +
+                       "之前从本服务取得的构件 ID 属于那个文档，在这里全部无效，需要重新查询。";
+            }
+        }
+
+        private void CommitIdentity(ContextIdentity identity)
+        {
+            if (identity?.Key == null) return;
+
+            lock (_identityLock)
+            {
+                _lastIdentityKey = identity.Key;
+                _lastIdentityLabel = identity.Label;
+            }
         }
 
         public IReadOnlyList<ToolDefinition> ListTools() => _registry.Definitions;
@@ -122,8 +183,8 @@ namespace RevitMCP.Tooling
             if (!tool.IsReadOnly && !writeEnabled)
             {
                 return Failure(entry, ToolOutcome.Rejected, McpDomainError.WriteDisabled,
-                    "工具 " + name + " 会修改模型，但写入模式当前未开启。" +
-                    "请让用户在 Revit 的 RevitMCP 面板上点击「写入：关」将其开启。");
+                    "工具 " + name + " 会修改模型，但当前处于浏览模式。" +
+                    "请让用户在 Revit 的 RevitMCP 选项卡上，把「操作模式」从「浏览模型」切换到「修改模型」。");
             }
 
             var timeout = TimeSpan.FromSeconds(Math.Max(1,
@@ -139,6 +200,11 @@ namespace RevitMCP.Tooling
                 cancellationToken, new ConcurrentQueueAdapter(warnings),
                 progress ?? NullProgressSink.Instance);
 
+            // 在编组后的主线程上读到的身份。工具抛异常时它也已经被赋过值了，
+            // 所以失败路径同样能告诉模型"你手里的 ID 属于另一个文档"——
+            // 那恰恰是最需要这句话的时候
+            ContextIdentity identity = null;
+
             try
             {
                 var scopeInfo = new WriteScopeInfo(name, new ConcurrentQueueAdapter(warnings));
@@ -146,6 +212,12 @@ namespace RevitMCP.Tooling
                 var output = await _dispatcher.InvokeAsync(
                     host =>
                     {
+                        if (_contextIdentity != null)
+                        {
+                            try { identity = _contextIdentity(host); }
+                            catch { /* 读不到身份不值得让整个调用失败 */ }
+                        }
+
                         var hosted = WithHost(context, host);
 
                         // 只读工具不开事务：既省一次 Revit 事务开销，
@@ -156,6 +228,10 @@ namespace RevitMCP.Tooling
                     },
                     timeout,
                     cancellationToken).ConfigureAwait(false);
+
+                var switched = PeekContextSwitch(identity);
+                if (switched != null) warnings.Enqueue(switched);
+                CommitIdentity(identity);
 
                 var payload = AttachWarnings(JsonMapper.ToJson(output), warnings);
 
@@ -174,7 +250,12 @@ namespace RevitMCP.Tooling
             }
             catch (ToolFailureException ex)
             {
-                return Failure(entry, ToolOutcome.Failed, ex.Code, ex.Message);
+                // "找不到这个构件"配上"文档换了"，模型立刻知道该重新查而不是换个 ID 再试
+                var switched = PeekContextSwitch(identity);
+                CommitIdentity(identity);
+
+                return Failure(entry, ToolOutcome.Failed, ex.Code,
+                    switched == null ? ex.Message : ex.Message + "\n注意：" + switched);
             }
             catch (ToolInputException ex)
             {
@@ -221,7 +302,15 @@ namespace RevitMCP.Tooling
 
             var array = JsonValue.NewArray();
             foreach (var warning in warnings) array.Add(JsonValue.String(warning));
-            return payload.Set("warnings", array);
+
+            // 工具自己也有 warnings 字段时绝不能直接盖掉。
+            //
+            // 实测踩过一次：revit_get_warnings 的输出字段恰好同名，管线一挂上去，
+            // 工具查到的警告数据就整个消失了——而且消失得悄无声息，
+            // total、groupCount 这些兄弟字段还在，只有数组被换了内容，
+            // 看输出的人会以为是工具没查到。
+            var key = payload["warnings"] == null ? "warnings" : "serverWarnings";
+            return payload.Set(key, array);
         }
 
         /// <summary>把 ConcurrentQueue 装成 IList 的只进不出视图：工具只会往里 Add。</summary>

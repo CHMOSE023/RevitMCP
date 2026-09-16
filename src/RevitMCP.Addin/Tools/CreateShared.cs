@@ -24,7 +24,7 @@ namespace RevitMCP.Addin.Tools
 
         public XYZ ToXyz()
         {
-            return Mm.Point(X, Y, Z ?? 0);
+            return Units.Point(X, Y, Z ?? 0);
         }
 
         public override string ToString()
@@ -288,11 +288,11 @@ namespace RevitMCP.Addin.Tools
                 throw Failure(index, McpDomainError.InvalidParameter, "locationLine 需要 p0 和 p1 两个点。");
 
             var lengthMm = Distance(location.P0, location.P1);
-            if (lengthMm < Mm.MinLength)
+            if (lengthMm < Units.MinLength)
                 throw Failure(index, McpDomainError.InvalidParameter,
                     "起点 " + location.P0 + " 与终点 " + location.P1 + " 相距 " +
                     lengthMm.ToString("0.###", CultureInfo.InvariantCulture) +
-                    " 毫米，太短，Revit 无法创建构件。两点至少相距 " + Mm.MinLength + " 毫米。");
+                    " 毫米，太短，Revit 无法创建构件。两点至少相距 " + Units.MinLength + " 毫米。");
 
             return Line.CreateBound(location.P0.ToXyz(), location.P1.ToXyz());
         }

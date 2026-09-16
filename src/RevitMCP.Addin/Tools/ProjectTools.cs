@@ -132,8 +132,10 @@ namespace RevitMCP.Addin.Tools
         [McpParam("是否因 limit 而被截断")]
         public bool Truncated { get; set; }
 
+        // 刻意不叫 warnings：那个字段名归管线所有（它往每个工具输出里挂服务端提示），
+        // 工具再占用就会被悄悄盖掉——这个坑实测踩过一次
         [McpParam("警告分组，按条数从多到少排列")]
-        public List<WarningGroup> Warnings { get; set; } = new List<WarningGroup>();
+        public List<WarningGroup> Groups { get; set; } = new List<WarningGroup>();
     }
 
     [McpTool("revit_get_warnings",
@@ -220,7 +222,7 @@ namespace RevitMCP.Addin.Tools
                 Total = total,
                 GroupCount = sorted.Count,
                 Truncated = sorted.Count > limit,
-                Warnings = sorted.Take(limit).ToList()
+                Groups = sorted.Take(limit).ToList()
             };
         }
 

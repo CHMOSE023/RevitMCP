@@ -139,7 +139,7 @@ $warnings = Invoke-RevitTool $session 'revit_get_warnings' -ThrowOnError
 # 只看与本次新建的墙有关的警告。模型里原有的警告不是这次的责任，
 # 混在一起会让"我刚才干的事有没有出问题"这个问题失去答案
 $mine = @()
-foreach ($group in $warnings.Data.warnings) {
+foreach ($group in $warnings.Data.groups) {
     $hit = @($group.elementIds | Where-Object { $allIds -contains $_ })
     if ($hit.Count -gt 0) {
         $mine += [PSCustomObject]@{ Description = $group.description; Ids = $hit; Count = $group.count }
@@ -188,7 +188,7 @@ $remainingIds = @($allIds | Where-Object { $_ -ne $duplicateId })
 $after = Invoke-RevitTool $session 'revit_get_warnings' -ThrowOnError
 
 $stillMine = @()
-foreach ($group in $after.Data.warnings) {
+foreach ($group in $after.Data.groups) {
     $hit = @($group.elementIds | Where-Object { $remainingIds -contains $_ })
     if ($hit.Count -gt 0) { $stillMine += $group.description }
 }

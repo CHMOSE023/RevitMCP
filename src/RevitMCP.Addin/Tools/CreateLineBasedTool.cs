@@ -108,9 +108,9 @@ namespace RevitMCP.Addin.Tools
             LineBasedElementSpec spec, int index, Line line, Level level, double offsetMm)
         {
             var heightMm = spec.Height ?? DefaultWallHeightMm;
-            if (heightMm < Mm.MinLength)
+            if (heightMm < Units.MinLength)
                 throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
-                    "墙高必须为正且不小于 " + Mm.MinLength + " 毫米，收到 " + heightMm + "。");
+                    "墙高必须为正且不小于 " + Units.MinLength + " 毫米，收到 " + heightMm + "。");
 
             var wallType = CreateSupport.ResolveType<WallType>(
                 document, context, spec.TypeId, BuiltInCategory.OST_Walls, index);
@@ -123,8 +123,8 @@ namespace RevitMCP.Addin.Tools
                     line,
                     wallType.Id,
                     level.Id,
-                    Mm.ToFeet(heightMm),
-                    Mm.ToFeet(offsetMm),
+                    Units.ToFeet(heightMm),
+                    Units.ToFeet(offsetMm),
                     false,                          // flip：朝向由定位线的方向决定，不额外提供翻转
                     spec.Structural ?? false);
             }
@@ -145,7 +145,7 @@ namespace RevitMCP.Addin.Tools
                 Category = "OST_Walls",
                 Type = CreateSupport.SafeName(wallType),
                 Level = CreateSupport.SafeName(level),
-                LengthMm = Mm.Round(CreateSupport.Distance(spec.LocationLine.P0, spec.LocationLine.P1))
+                LengthMm = Units.Round(CreateSupport.Distance(spec.LocationLine.P0, spec.LocationLine.P1))
             };
         }
 
@@ -168,7 +168,7 @@ namespace RevitMCP.Addin.Tools
             // 结果是梁默默留在标高平面上、只留下一条警告。把高度做进几何里就不会有这种偏差。
             //
             // 规则与点定位工具一致：绝对高度 = 标高 + locationLine 的 z + baseOffset
-            var rise = level.Elevation + Mm.ToFeet(offsetMm);
+            var rise = level.Elevation + Units.ToFeet(offsetMm);
             var placement = Line.CreateBound(
                 line.GetEndPoint(0) + XYZ.BasisZ * rise,
                 line.GetEndPoint(1) + XYZ.BasisZ * rise);
@@ -196,7 +196,7 @@ namespace RevitMCP.Addin.Tools
                 Category = "OST_StructuralFraming",
                 Type = CreateSupport.SafeName(symbol),
                 Level = CreateSupport.SafeName(level),
-                LengthMm = Mm.Round(CreateSupport.Distance(spec.LocationLine.P0, spec.LocationLine.P1))
+                LengthMm = Units.Round(CreateSupport.Distance(spec.LocationLine.P0, spec.LocationLine.P1))
             };
         }
 

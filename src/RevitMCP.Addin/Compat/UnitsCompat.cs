@@ -10,7 +10,7 @@ namespace RevitMCP.Addin.Compat
     /// <c>UnitType</c> + <c>DisplayUnitType</c> 被 <c>ForgeTypeId</c> 取代——
     /// 差异只允许出现在这里。
     ///
-    /// 只读不换算：工具内部的长度换算一律走 <see cref="RevitMCP.Addin.Tools.Mm"/> 的
+    /// 只读不换算：工具内部的长度换算一律走 <see cref="RevitMCP.Addin.Tools.Units"/> 的
     /// 硬编码常量（1 ft = 304.8 mm），不碰 UnitUtils。这里要回答的是另一个问题——
     /// **用户在界面上看到的数字是什么单位**。英制项目上模型若假设"数字是毫米"，
     /// 读出来的一切都会错得无声无息。

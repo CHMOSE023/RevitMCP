@@ -5,9 +5,9 @@
 
 支持 **Revit 2019 – 2024**。架构设计见 [docs/architecture.md](docs/architecture.md)。
 
-> 当前进度：**M6 完成并已在 Revit 2019 实测通过**。建模工具已按几何形态重构成批量签名，
-> 模型警告、删除、类型与标高发现、选择集就位——
-> 建错了模型自己能发现、自己能收场。共 15 个工具：10 个只读 + 5 个写。
+> 当前进度：**M7 完成并已在 Revit 2019 实测通过**。
+> 房间、几何、空间查询就位——能回答"这个房间多大、里面有什么、哪两面墙打架了"。
+> 共 18 个工具：12 个只读 + 6 个写。
 
 ---
 
@@ -45,7 +45,7 @@ claude mcp add --transport http revit http://127.0.0.1:7801/mcp --header "Author
 ```
 
 ```bash
-# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 98 + HTTP/MCP 端到端 54）
+# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 107 + HTTP/MCP 端到端 54）
 dotnet test RevitMCP.sln -c "Debug R24"
 ```
 
@@ -94,6 +94,8 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_query_elements` | 按类别查构件，返回 ID / 名称 / 类型 / 标高 |
 | `revit_get_element_parameters` | 批量读参数，同时给出原始值与带单位的显示值 |
 | `revit_get_warnings` | Revit 自己记录的模型警告，按种类归组——质检闭环的地基 |
+| `revit_list_rooms` | 房间及其面积（㎡）、周长、边界。面积为 0 直接点出"没围合" |
+| `revit_get_element_geometry` | 包围盒、定位线/点、朝向。**不返回网格** |
 | `revit_get_selection` | 用户此刻在 Revit 里选中了什么 |
 
 **改模型**（需要用户在 Ribbon 上切到「修改模型」）
@@ -103,6 +105,7 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_create_line_based_elements` | 按定位线批量建墙、梁 |
 | `revit_create_point_based_elements` | 按插入点批量建门、窗、家具 |
 | `revit_create_surface_based_elements` | 按闭合边界批量建楼板、屋顶、天花 |
+| `revit_create_rooms` | 按点批量建房间，回执直接给出面积 |
 | `revit_set_element_parameters` | 批量改同一个参数，全有全无 |
 | `revit_delete_elements` | 删除构件，先预览连带影响再确认 |
 
@@ -180,6 +183,10 @@ public sealed class DoSomethingInput
 想让模型看见某个提示（比如"你没指定标高，我用了标高 1"），
 往 `context.Warnings` 里 `Add` 一句即可，管线会并进输出的 `warnings` 字段。
 
+**`warnings` 这个字段名归管线所有，工具的输出 DTO 不要占用它。**
+撞名时管线会把自己的提示改挂到 `serverWarnings`（而不是覆盖你的数据），
+但那会让模型面对两个不确定的字段名。`revit_get_warnings` 因此把自己的分组叫 `groups`。
+
 前三个项目刻意不依赖 Revit API，这不只是洁癖：**整条 HTTP + MCP 通路能在没装 Revit 的机器上
 端到端测试**，CI 因此能覆盖大部分逻辑。
 
@@ -231,6 +238,7 @@ foreach (var element in elements)
 | 脚本 | 内容 |
 |---|---|
 | [`m6-closed-loop.ps1`](workflows/m6-closed-loop.ps1) | 建一圈墙（故意建错一面）→ 靠警告发现 → 预览后删掉 → 复查干净 → 选中交回用户 |
+| [`m7-space.ps1`](workflows/m7-space.ps1) | 围出两间房 → 读面积与边界 → 查"房间里有什么" → 用警告与包围盒判断两面墙是否打架 |
 | [`McpClient.ps1`](workflows/McpClient.ps1) | 连接与调用辅助：自动发现本机实例、读取令牌、走 modern era 无状态调用 |
 
 ```bash
@@ -312,7 +320,7 @@ powershell -ExecutionPolicy Bypass -File workflows/m6-closed-loop.ps1
 | M4 | 事务管线、失败预处理、对话框拦截、写保护、规模阈值 + 2 个写工具 | ✅ 完成 |
 | M5 | SSE 进度通知、审计日志、多实例发现完善 | ✅ 完成 |
 | M6 | 建模工具按几何形态重构（批量签名）、模型警告、删除、类型与标高发现、选择集、项目单位 | ✅ 完成 |
-| M7 | 房间、几何最小集、空间过滤 | 规划中 |
+| M7 | 房间、几何最小集、空间过滤、文档身份 | ✅ 完成 |
 | M8 | 视图与图纸、导出图片、明细表读取 | 规划中 |
 | M9 | 多实例批处理、企业标准可执行化、外部系统对接 | 规划中 |
 

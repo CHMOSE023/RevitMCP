@@ -144,8 +144,8 @@ namespace RevitMCP.Addin.Tools
             // 插入点的 Z 用标高高度：门窗在墙上的竖向位置由窗台高度参数控制，
             // 插入点给错 Z 会让 Revit 找不到墙面
             var point = new XYZ(
-                Mm.ToFeet(spec.LocationPoint.X),
-                Mm.ToFeet(spec.LocationPoint.Y),
+                Units.ToFeet(spec.LocationPoint.X),
+                Units.ToFeet(spec.LocationPoint.Y),
                 level.Elevation);
 
             FamilyInstance instance;
@@ -174,9 +174,9 @@ namespace RevitMCP.Addin.Tools
             PointBasedElementSpec spec, int index, FamilySymbol symbol, Level level, double aboveLevelMm)
         {
             var point = new XYZ(
-                Mm.ToFeet(spec.LocationPoint.X),
-                Mm.ToFeet(spec.LocationPoint.Y),
-                level.Elevation + Mm.ToFeet(aboveLevelMm));
+                Units.ToFeet(spec.LocationPoint.X),
+                Units.ToFeet(spec.LocationPoint.Y),
+                level.Elevation + Units.ToFeet(aboveLevelMm));
 
             FamilyInstance instance;
             try
@@ -239,7 +239,7 @@ namespace RevitMCP.Addin.Tools
         /// </summary>
         private static Wall FindNearestWall(Document document, Point3D point, out double distanceMm)
         {
-            var target = new XYZ(Mm.ToFeet(point.X), Mm.ToFeet(point.Y), 0);
+            var target = new XYZ(Units.ToFeet(point.X), Units.ToFeet(point.Y), 0);
             var best = (Wall)null;
             var bestFeet = double.MaxValue;
 
@@ -272,7 +272,7 @@ namespace RevitMCP.Addin.Tools
                 best = wall;
             }
 
-            distanceMm = best == null ? double.MaxValue : Mm.FromFeet(bestFeet);
+            distanceMm = best == null ? double.MaxValue : Units.FromFeet(bestFeet);
             return distanceMm <= MaxHostSearchMm ? best : null;
         }
 
@@ -283,7 +283,7 @@ namespace RevitMCP.Addin.Tools
         private static void ApplySillHeight(
             FamilyInstance instance, double aboveLevelMm, ToolExecutionContext<UIApplication> context)
         {
-            var feet = Mm.ToFeet(aboveLevelMm);
+            var feet = Units.ToFeet(aboveLevelMm);
 
             if (TrySet(instance, BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM, feet)) return;
 

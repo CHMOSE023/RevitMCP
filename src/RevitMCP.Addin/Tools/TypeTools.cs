@@ -188,7 +188,7 @@ namespace RevitMCP.Addin.Tools
                 var structure = hostType.GetCompoundStructure();
                 if (structure == null) return null;   // 幕墙、叠层墙没有层结构
 
-                return Mm.Round(Mm.FromFeet(structure.GetWidth()));
+                return Units.Round(Units.FromFeet(structure.GetWidth()));
             }
             catch
             {
@@ -278,7 +278,7 @@ namespace RevitMCP.Addin.Tools
                 {
                     Id = level.Id.ToProtocolString(),
                     Name = SafeName(level),
-                    ElevationMm = Mm.Round(Mm.FromFeet(level.Elevation)),
+                    ElevationMm = Units.Round(Units.FromFeet(level.Elevation)),
                     IsBuildingStory = IsBuildingStory(level),
                     IsActiveViewLevel = activeLevelId != null && level.Id == activeLevelId
                 })
