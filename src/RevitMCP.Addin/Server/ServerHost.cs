@@ -1,36 +1,48 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Text;
 using RevitMCP.Addin.Compat;
 using RevitMCP.Addin.Configuration;
 using RevitMCP.Addin.Diagnostics;
+using RevitMCP.Addin.Dispatcher;
+using Autodesk.Revit.UI;
+using RevitMCP.Addin.Tools;
 using RevitMCP.Protocol.Json;
+using RevitMCP.Protocol.Mcp;
+using RevitMCP.Tooling;
+using RevitMCP.Transport;
+using RevitMCP.Transport.Http;
 
 namespace RevitMCP.Addin.Server
 {
     public enum ServerState { Stopped, Starting, Running, Faulted }
 
     /// <summary>
-    /// 服务生命周期与实例发现文件的管理者。
+    /// 服务生命周期：装配 MCP 服务 + HTTP 传输，并维护实例发现文件。
     ///
-    /// M0 现状：状态机、实例发现文件、Ribbon 联动均已可用，但**尚未监听端口**——
-    /// 真正的 TcpListener / HTTP / JSON-RPC 在 M1 接入（见下方 TODO(M1)）。
-    /// 状态文案刻意写明这一点，避免界面显示 "运行中" 而实际不接受连接。
+    /// M3 现状：工具由 [McpTool] 反射注册，只读工具已可用；
+    /// 写工具的事务管线在 M4。
     /// </summary>
     public sealed class ServerHost
     {
         private readonly McpConfig _config;
+        private readonly RevitDispatcher _dispatcher;
         private readonly object _gate = new object();
 
-        public ServerHost(McpConfig config)
+        private MiniHttpServer _http;
+
+        public ServerHost(McpConfig config, RevitDispatcher dispatcher)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
+            _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         }
 
         public ServerState State { get; private set; } = ServerState.Stopped;
 
-        /// <summary>实际监听端口。未启动时为 0。</summary>
+        /// <summary>实际监听端口（可能因端口占用而不等于配置值）。未启动时为 0。</summary>
         public int Port { get; private set; }
 
         public event EventHandler StateChanged;
@@ -43,9 +55,7 @@ namespace RevitMCP.Addin.Server
             {
                 switch (State)
                 {
-                    case ServerState.Running:
-                        // TODO(M1): 传输层接入后改为 "运行中 · 端口 {Port}"
-                        return "已启用 · 端口 " + Port + "（传输层待 M1）";
+                    case ServerState.Running: return "运行中 · 端口 " + Port;
                     case ServerState.Starting: return "启动中…";
                     case ServerState.Faulted: return "启动失败，见日志";
                     default: return "已停止";
@@ -62,18 +72,36 @@ namespace RevitMCP.Addin.Server
                 SetState(ServerState.Starting);
                 try
                 {
-                    Port = _config.Port;
+                    var mcp = new McpServer(
+                        new McpServerOptions
+                        {
+                            ServerName = "RevitMCP",
+                            ServerVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString(3),
+                            Instructions = BuildInstructions()
+                        },
+                        BuildToolPipeline());
 
-                    // TODO(M1): 在此启动 MiniHttpServer，并把实际绑定到的端口写回 Port
-                    //           （端口被占用时从 config.Port 起向上探测）。
+                    var handler = new McpHttpHandler(
+                        mcp,
+                        new McpHttpOptions
+                        {
+                            Token = _config.Token,
+                            AllowedOrigins = _config.AllowedOrigins
+                        },
+                        (message, ex) => LogFrom(message, ex));
+
+                    _http = new MiniHttpServer(handler.HandleAsync, (message, ex) => LogFrom(message, ex));
+                    Port = _http.Start(_config.Port);
 
                     WriteInstanceFile();
                     SetState(ServerState.Running);
-                    Log.Info("服务已启用，端口 " + Port);
+                    Log.Info("服务已启动：http://127.0.0.1:" + Port + "/mcp");
                 }
                 catch (Exception ex)
                 {
                     Log.Error("服务启动失败。", ex);
+                    SafeStopHttp();
+                    Port = 0;
                     SetState(ServerState.Faulted);
                     throw;
                 }
@@ -88,7 +116,7 @@ namespace RevitMCP.Addin.Server
 
                 try
                 {
-                    // TODO(M1): 停止监听、断开所有 SSE 会话
+                    SafeStopHttp();
                     DeleteInstanceFile();
                 }
                 catch (Exception ex)
@@ -104,6 +132,13 @@ namespace RevitMCP.Addin.Server
             }
         }
 
+        private void SafeStopHttp()
+        {
+            try { _http?.Stop(); }
+            catch (Exception ex) { Log.Error("停止 HTTP 监听失败。", ex); }
+            finally { _http = null; }
+        }
+
         public void SetWriteEnabled(bool enabled)
         {
             _config.WriteEnabled = enabled;
@@ -113,10 +148,40 @@ namespace RevitMCP.Addin.Server
             Log.Info("写入模式：" + (enabled ? "已开启" : "已关闭"));
         }
 
-        /// <summary>供 "复制接入命令" 按钮使用。</summary>
+        /// <summary>供「复制接入命令」按钮使用。</summary>
         public string BuildConnectCommand() =>
             "claude mcp add --transport http revit http://127.0.0.1:" + Port + "/mcp" +
             " --header \"Authorization: Bearer " + _config.Token + "\"";
+
+        /// <summary>
+        /// 扫描本程序集中所有 [McpTool] 并组装执行管线。
+        /// 配置用委托而非快照传入：用户在 Ribbon 上切换写入开关后应立即生效，
+        /// 不需要重启服务。
+        /// </summary>
+        private ToolPipeline<UIApplication> BuildToolPipeline()
+        {
+            var registry = new ToolRegistry<UIApplication>();
+            var count = registry.RegisterAssembly(typeof(ServerHost).Assembly, _config.DisabledTools);
+            Log.Info("已注册 " + count + " 个工具：" + string.Join("、", registry.Tools.Select(t => t.Name).ToArray()));
+
+            return new ToolPipeline<UIApplication>(registry, _dispatcher, new ToolPipelineOptions
+            {
+                WriteEnabled = () => _config.WriteEnabled,
+                MaxElementsPerWrite = () => _config.MaxElementsPerWrite,
+                DefaultTimeoutSeconds = () => _config.DefaultToolTimeoutSeconds,
+                Log = LogFrom
+            });
+        }
+
+        private string BuildInstructions() =>
+            "操作当前在 Revit " + RevitVersionInfo.Year + " 中打开的模型。" +
+            "写操作默认被禁用，需用户在 Revit 的 RevitMCP 面板上手动开启。";
+
+        private static void LogFrom(string message, Exception ex)
+        {
+            if (ex != null) Log.Error(message, ex);
+            else Log.Debug(message);
+        }
 
         // ---------- 实例发现 ----------
         // 一台机器可能同时开多个 Revit，客户端需要知道该连哪个端口。
@@ -136,6 +201,7 @@ namespace RevitMCP.Addin.Server
                 var json = JsonValue.NewObject()
                     .Set("pid", Process.GetCurrentProcess().Id)
                     .Set("port", Port)
+                    .Set("endpoint", "http://127.0.0.1:" + Port + "/mcp")
                     .Set("revitVersion", RevitVersionInfo.Year)
                     .Set("writeEnabled", _config.WriteEnabled)
                     .Set("startedAt", DateTime.Now.ToString("o"))

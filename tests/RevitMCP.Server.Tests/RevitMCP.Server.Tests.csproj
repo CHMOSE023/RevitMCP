@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 传输层与协议层都不依赖 Revit，所以整条 HTTP + MCP 通路可以在普通机器 / CI 上端到端测试。 -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputPath>$(MSBuildThisFileDirectory)bin\</OutputPath>
+    <RootNamespace>RevitMCP.Server.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RevitMCP.Transport\RevitMCP.Transport.csproj" />
+    <ProjectReference Include="..\..\src\RevitMCP.Tooling\RevitMCP.Tooling.csproj" />
+  </ItemGroup>
+</Project>

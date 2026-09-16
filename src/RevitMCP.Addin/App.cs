@@ -4,6 +4,7 @@ using Autodesk.Revit.UI;
 using RevitMCP.Addin.Compat;
 using RevitMCP.Addin.Configuration;
 using RevitMCP.Addin.Diagnostics;
+using RevitMCP.Addin.Dispatcher;
 using RevitMCP.Addin.Ribbon;
 using RevitMCP.Addin.Server;
 
@@ -21,6 +22,7 @@ namespace RevitMCP.Addin
 
         public McpConfig Config { get; private set; }
         public ServerHost Server { get; private set; }
+        public RevitDispatcher Dispatcher { get; private set; }
 
         private RibbonController _ribbon;
 
@@ -45,14 +47,16 @@ namespace RevitMCP.Addin
 
                 ServerHost.PruneStaleInstanceFiles();
 
-                Server = new ServerHost(Config);
+                // ExternalEvent.Create 只能在 Revit 主线程、且仅限 OnStartup 期间执行，
+                // 放到第一次请求时懒加载会失败——这行的位置是有约束的，不要移动。
+                Dispatcher = new RevitDispatcher();
+                Dispatcher.Initialize();
+
+                Server = new ServerHost(Config, Dispatcher);
                 Server.StateChanged += (s, e) => _ribbon?.Refresh(Server, Config.WriteEnabled);
 
                 _ribbon = RibbonController.Build(application);
                 _ribbon.Refresh(Server, Config.WriteEnabled);
-
-                // TODO(M2): Dispatcher.Initialize() 必须在这里调用——
-                //           ExternalEvent.Create 只能在 Revit 主线程、且仅限 OnStartup 期间执行。
 
                 if (Config.AutoStart)
                 {
@@ -87,6 +91,8 @@ namespace RevitMCP.Addin
             try
             {
                 Server?.Stop();
+                // 先停服务再停调度器：反过来的话，正在处理中的请求会拿到 SERVER_STOPPED 而不是正常结果
+                Dispatcher?.Shutdown();
                 Log.Info("RevitMCP 已关闭。");
             }
             catch (Exception ex)

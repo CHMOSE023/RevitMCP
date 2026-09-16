@@ -97,10 +97,23 @@ claude mcp add --transport http revit http://127.0.0.1:7801/mcp --header "Author
 
 **方案：基于 `TcpListener` 的最小 HTTP/1.1 实现**（约 300 行）。只需支持：
 - `POST /mcp`：请求体 JSON-RPC，响应 `application/json`（单响应）或 `text/event-stream`（需要流式/进度时）
-- `GET /mcp`：可选，服务端→客户端的 SSE 通道（用于日志、进度通知）
-- `DELETE /mcp`：结束会话
-- `Mcp-Session-Id` 头做会话绑定
+- ~~`GET /mcp`：服务端→客户端的 SSE 通道~~ **[M1 已修订]** 2026-07-28 移除了 GET 流端点，回 `405`
+- ~~`DELETE /mcp`：结束会话~~ **[M1 已修订]** 同上，协议级会话已移除，回 `405`
+- ~~`Mcp-Session-Id` 头做会话绑定~~ **[M1 已修订]** 规范要求忽略该头，不再签发或回显
 - 只解析 `Content-Length` 定长 body（拒绝 chunked 请求，本地客户端不会用到）
+
+> **[M1 已修订] 规范换代。** 编码时核对规范发现当前修订是 **2026-07-28**，它把 Streamable HTTP
+> 改成了无状态形态：没有 `initialize` 握手，版本与能力改为随每个请求的 `_meta` 传递，
+> 会话、GET SSE 流、`Last-Event-ID` 断点续传全部移除。
+>
+> 本设计原先是照 legacy 那一代（`2025-11-25` 及更早）写的。实现采取 **dual-era**：
+> 规范明确允许服务端同时服务两代，判定依据是消息体里有没有
+> `_meta["io.modelcontextprotocol/protocolVersion"]`——带就按 2026-07-28 无状态处理，
+> 不带（或方法是 `initialize`）就按 legacy 握手语义处理。
+>
+> 这样选是因为 2026-07-28 距今才几周，客户端支持仍在铺开，而 dual-era 是严格超集：
+> 无论对端说哪一代都能连上。代价是多一份 era 分支逻辑，收敛在
+> `McpHttpHandler.DetectEra` 与 `McpRequestContext` 两处。
 
 `TcpListener` 绑定 `127.0.0.1` 不需要任何 ACL，这是选它的唯一但充分的理由。
 
@@ -138,7 +151,11 @@ System.Net.ServerSentEvents, System.Text.Json, System.Threading.Channels  (均 �
 | B | 引用官方 SDK + ILRepack 全闭包内联化 | 蹭官方实现与后续更新 | ILRepack 处理 `System.Text.Json`/`Immutable` 很脆；升级 SDK 要重调打包 | 备选 |
 | C | 拆成 net8 独立进程做 stdio 桥接，与插件走本地 IPC | 可直接用官方 SDK | 违背"单进程"约束，多一个进程要管生命周期 | 仅作为 A 失败时的逃生口 |
 
-> 路线 A 的实际工作量被"MCP 协议很大"的印象高估了。本期只需实现 `initialize`、`tools/list`、`tools/call`、`ping`、`notifications/initialized`、`notifications/progress`、`logging/setLevel` 七个方法，其余按规范返回"未实现"。
+> 路线 A 的实际工作量被"MCP 协议很大"的印象高估了。**[M1 实测]** 手写协议层连同自带 JSON
+> 共约 1100 行，方法面很小：`ping`、`tools/list`、`tools/call` 两代通用，
+> `server/discover` 仅 modern，`initialize`、`notifications/initialized` 仅 legacy，其余返回 `-32601`。
+> 规范在 M1 期间刚换代（见 §3），手写反而让适配只花了几十行——
+> 若绑在官方 SDK 上，还得等它跟进并重新趟一遍依赖闭包。
 
 ### JSON 序列化 **[M0 已修订]**
 
@@ -159,27 +176,63 @@ System.Net.ServerSentEvents, System.Text.Json, System.Threading.Channels  (均 �
 - 对象成员保持插入顺序，让 `config.json` 对人可读、协议报文的 diff 可比。
 - 严格拒绝前导零、未转义控制字符、尾随内容等非法输入，不做"宽容解析"。
 
-### 方法分发
-```csharp
-public interface IRpcMethod {
-    string Name { get; }
-    Task<object> InvokeAsync(JToken @params, RpcContext ctx, CancellationToken ct);
-}
-```
-一个 `Dictionary<string, IRpcMethod>` 分发即可，无需反射魔法。
+### 方法分发 **[M1 已修订]**
+
+方法只有六个，`switch` 比注册表更直白，最终没有引入 `IRpcMethod` 抽象：
+
+| 方法 | modern (2026-07-28) | legacy (≤2025-11-25) |
+|---|---|---|
+| `ping` | ✓ | ✓ |
+| `tools/list` | ✓ | ✓ |
+| `tools/call` | ✓ | ✓ |
+| `server/discover` | ✓（规范要求必须实现） | ✗ → `-32601` |
+| `initialize` | ✗ → `-32601` | ✓ |
+| `notifications/initialized` | ✗ | ✓ → `202` |
+
+era 差异收敛在两处，别的地方不需要关心自己在服务哪一代：
+- `McpRequestContext.NewResult()`：modern 的结果对象要带 `resultType: "complete"`，legacy 不认识它。
+- `McpServer.IsKnownMethod(method, era)`：决定某方法在该代是否存在。
+
+HTTP 层的义务（Origin 校验、Bearer 认证、era 判定、头/体一致性校验、状态码选择）
+全在 `McpHttpHandler`，协议层与传输无关。
 
 ### 错误模型（两套，不要混用）
 - **协议级错误** → JSON-RPC `error`：`-32700` 解析失败、`-32600` 非法请求、`-32601` 方法不存在、`-32602` 参数非法、`-32603` 内部错误。
+  **[M1 补充]** 加上 MCP 在保留区间分配的两个码：`-32020` HeaderMismatch（头与消息体不一致）、
+  `-32022` UnsupportedProtocolVersion（`data.supported` 必须列出我们支持的版本，客户端据此重试）。
+  另外 modern 下的 `-32601` 规范要求配 **HTTP 404**，好和"这台服务器压根没有 MCP 端点"的裸 404 区分开；
+  legacy 下仍是 HTTP 200。
 - **工具执行失败** → `tools/call` 正常返回，但 `isError: true` + 文本内容说明原因。
   这点很关键：**工具失败要让模型看见并自我纠正**，包成 JSON-RPC error 会让客户端当成传输故障。
 
-领域错误码（放进 `isError` 文本，便于模型识别）：
-`REVIT_BUSY`（主线程被模态框占用）、`NO_ACTIVE_DOC`、`WRITE_DISABLED`、
-`ELEMENT_NOT_FOUND`、`INVALID_PARAMETER`、`TRANSACTION_FAILED`、`TIMEOUT`。
+领域错误码（放进 `isError` 文本，便于模型识别；定义见 `RevitMCP.Tooling/McpDomainError.cs`）：
+
+| 码 | 含义 | 模型可否安全重试 |
+|---|---|---|
+| `REVIT_BUSY` | 主线程被模态框或长运算占用，**工作从未开始** | 可以，模型未被触碰 |
+| `TIMEOUT` | 工作**已开始**但未在超时内完成 | **不可**，模型可能已被部分修改 |
+| `NO_ACTIVE_DOC` | Revit 中没有打开文档 | 需用户先打开模型 |
+| `WRITE_DISABLED` | 写保护未开启 | 需用户在 Ribbon 上开启 |
+| `SERVER_STOPPED` | 服务正在关闭 | — |
+| `ELEMENT_NOT_FOUND` / `INVALID_PARAMETER` / `TRANSACTION_FAILED` | 见字面 | 视情况 |
+
+"可否安全重试"这一列是这张表存在的理由：模型看到错误后要不要再来一次，全取决于它。
 
 ---
 
 ## 5. ④ 调度层：线程模型（**全框架最核心的一节**）
+
+> **[M2 已修订] 拆成两半。** 原设计把调度器整个放在 `RevitMCP.Addin` 里。
+> 但这一层的语义（排队、超时、放弃、竞态）恰恰是最需要测试、也最难靠肉眼看对的部分，
+> 而放在 Addin 里就必须有 Revit 才能跑。
+>
+> 实现拆成：
+> - `RevitMCP.Tooling/Dispatch/DispatchQueue<TContext>`——**不依赖 Revit**，泛型化上下文。
+>   全部超时/放弃/竞态语义在这里，19 个测试在 CI 上覆盖。
+> - `RevitMCP.Addin/Dispatcher/RevitDispatcher`——极薄的壳，只做 `ExternalEvent` 接线，
+>   同时实现 `IExternalEventHandler` 和 `IDispatchSignal`。
+>
+> 代价是 §1 的分层图里 ④ 现在跨了两个程序集；换来的是这一层能在没装 Revit 的机器上验证。
 
 ### 问题
 HTTP 请求到达在线程池线程上，而 Revit API 必须在主线程、且处于有效 API context 中调用。跨线程碰 `Document` 轻则抛 `InvalidOperationException`，重则直接崩 Revit。
@@ -235,7 +288,19 @@ public sealed class RevitDispatcher : IExternalEventHandler
 
 1. **`ExternalEvent.Create` 只能在主线程调用**，且只能在 `OnStartup` 期间创建一次。放到第一次请求时懒加载会失败。
 2. **`Raise()` 返回 `Pending` 不是错误**，只是表示上一次尚未执行完，无需重试。
-3. **超时不等于取消。** `ExternalEvent` 没有取消机制——超时后那个 `WorkItem` 仍可能在晚些时候被执行。所以 `MarkAbandoned()` 后 `Run()` 必须自检并跳过，否则会对文档做出"客户端已经放弃"的修改。这是本设计里最隐蔽的正确性问题。
+3. **超时不等于取消。** `ExternalEvent` 没有取消机制——超时后那个 `WorkItem` 仍可能在晚些时候被执行。所以放弃标记后 `Pump()` 必须自检并跳过，否则会对文档做出"客户端已经放弃"的修改。这是本设计里最隐蔽的正确性问题。
+
+   **[M2 已实现并加强]** 光有"放弃标记"还不够——**超时与执行本身是竞态的**。
+   两者都用 `Interlocked.CompareExchange` 去抢同一个状态位，只有一方能赢：
+
+   | 谁抢到 | 含义 | 返回给调用方 |
+   |---|---|---|
+   | 超时方抢到 `Pending → Abandoned` | 工作**从未开始**，模型确定未被触碰 | `REVIT_BUSY` |
+   | 泵抢到 `Pending → Running` | 工作**已在执行**，模型可能已变 | 宽限 10s；仍未完成则 `TIMEOUT` |
+
+   原设计只有 `REVIT_BUSY` 一种超时。但对一条已经跑起来的写操作回 `REVIT_BUSY`，
+   等于告诉模型"什么都没发生"，它会据此重试——**这比超时本身危险得多**。
+   两种超时必须是不同的错误码。
 4. **时间预算 200ms** 是为了不让一批长任务把 Revit UI 冻住。单个工具自身超时另计（默认 60s，工具可声明覆盖）。
 
 ### 长任务与进度
@@ -295,6 +360,17 @@ public sealed class QueryElementsInput
 
 > 不引入 `NJsonSchema` 等库——理由同 §4，任何新依赖都是 Revit AppDomain 里的风险。
 
+**[M3 补充] 必填规则只有一条，三处共用。**
+`string` 是引用类型 → 可选；`int` 不可空 → 必填；`int?` → 可选；`[McpParam(Required = true)]` → 必填。
+Schema 生成、入参绑定、文档三者必须给出同一个答案，所以判定集中在
+`TypeIntrospection.IsRequired` 一个方法里——分散实现会表现为
+"Schema 说可选、绑定却报必填"这类极难排查的问题。
+
+**绑定刻意严格：未知字段报错，且先于必填检查。**
+字段拼错时两种错误会同时出现；先报"未知参数 catgeory，可用参数：category、limit、nameContains"
+比先报"缺少 category"更能让模型一次改对。静默忽略最糟——模型会一直以为自己传对了。
+（这一条是写端到端测试时才暴露出来的，原顺序反了。）
+
 ### 执行管线
 ```
 tools/call
@@ -309,6 +385,17 @@ tools/call
 ```
 
 工具作者**完全不接触**线程、事务、序列化——这三件事由管线统一处理。这是框架与"一堆散装命令"的本质区别。
+
+> **[M3 已修订] 写保护检查必须在编组之前。** 上面的顺序是对的，实现时也照此落实并加了测试：
+> 被写保护拒绝的调用不该占用 Revit 主线程，否则一个反复试探写工具的模型能把 UI 拖垮。
+>
+> **[M3 已修订] 管线也不依赖 Revit。** `ToolPipeline<TContext>` 通过
+> `IWorkDispatcher<TContext>` 拿到线程编组能力，上下文在插件里是 `UIApplication`、
+> 在测试里是假模型。因此整条"HTTP → 协议 → 管线 → Schema → 工具"链路能在 CI 上端到端跑通。
+>
+> **[M3 备注] 事务那一步尚未接入**（图中"打开事务"一行），M4 补。当前只有只读工具。
+>
+> **配置用委托读取而非启动时快照**：用户在 Ribbon 上切换写入开关后立即生效，不必重启服务。
 
 ---
 
@@ -517,15 +604,22 @@ RevitMCP/
 | 里程碑 | 内容 | 验收标准 |
 |---|---|---|
 | **M0 骨架** ✅ | 解决方案、四个项目、六版本矩阵、`.addin`、Ribbon、配置、日志、JSON 层、install.ps1 | Revit 启动能看到面板（**待用户在装有 Revit 的机器上验证**） |
-| **M1 通路** | TcpListener HTTP + JSON-RPC + `initialize`/`ping` | `curl` 能完成 initialize 握手 |
-| **M2 调度** | `RevitDispatcher` + 超时/放弃语义 + `REVIT_BUSY` | 冒烟项 6 通过 |
-| **M3 工具框架** | `[McpTool]`、注册表、Schema 生成、执行管线 + 3 个只读工具 | Claude Code 能 `tools/list` 并成功查询构件 |
+| **M1 通路** ✅ | TcpListener HTTP + JSON-RPC + dual-era 握手 + Origin/Bearer/头校验 | `curl` 两代握手均通过；38 个端到端测试 |
+| **M2 调度** ✅ | `DispatchQueue` + `RevitDispatcher` + 双重超时语义 + 首个诊断工具 | 19 个调度测试（含变异验证）；**冒烟项 6 待在 Revit 中验证** |
+| **M3 工具框架** ✅ | `[McpTool]`、注册表、Schema 生成、双向映射、执行管线 + 4 个只读工具 | 58 个框架测试 + 4 个 HTTP 端到端；curl 验证 `tools/list`/`tools/call`。**真实 Revit 工具待在 Revit 中验证** |
 | **M4 写入** | 事务管线、失败预处理、对话框拦截、写保护、规模阈值 + 2 个写工具 | 冒烟项 4/5/7 通过 |
 | **M5 打磨** | SSE 进度通知、日志与审计、多实例发现、文档 | 完整冒烟清单通过 |
 
-首批工具建议（覆盖典型读写形态，用来验证框架而非堆功能）：
-`revit_get_document_info`、`revit_query_elements`、`revit_get_element_parameters`（只读）；
-`revit_set_element_parameters`、`revit_create_wall`（写）。
+首批工具（覆盖典型读写形态，用来验证框架而非堆功能）：
+
+**[M3 已实现]** `revit_get_document_info`、`revit_list_categories`、`revit_query_elements`、
+`revit_get_element_parameters`（均只读）。
+
+`revit_list_categories` 是实现时加的：没有它，模型只能凭记忆猜 `BuiltInCategory` 名。
+同理 `ParseCategory` 在解析失败时会返回相近候选，而不是干巴巴一句"无效类别"——
+**面向模型的错误信息应当包含改正所需的信息**，这条原则贯穿整个工具层。
+
+**[M4 待做]** `revit_set_element_parameters`、`revit_create_wall`（写）。
 
 ---
 
@@ -535,10 +629,11 @@ RevitMCP/
 |---|---|---|
 | 与其他插件的程序集版本冲突 | Revit 启动崩溃或运行时 `FileLoadException` | 路线 A 零依赖；Newtonsoft 用 Revit 自带且 `Private=false` |
 | 模态对话框导致服务假死 | 所有请求超时 | §5 超时 + §7 双防线；冒烟项 6 强制回归 |
-| 超时后 `ExternalEvent` 迟到执行 | **静默修改用户模型** | `MarkAbandoned()` + `Run()` 自检；优先级最高的正确性缺陷 |
+| 超时后 `ExternalEvent` 迟到执行 | **静默修改用户模型** | **[M2 已消除]** CAS 抢占式放弃 + `Pump` 自检；并用变异测试确认（去掉自检后正好两条测试变红）|
 | 对话框拦截未解绑 | 用户正常操作的对话框被吞 | `try/finally` + 冒烟项 7 |
 | Revit 自带 Newtonsoft 版本不符 | 编译/运行失败 | 回退 ILRepack 内联改名 |
-| MCP 规范演进（路线 A 需自维护） | 客户端兼容性下降 | 协议版本号协商；`initialize` 中按客户端声明版本降级 |
+| MCP 规范演进（路线 A 需自维护） | 客户端兼容性下降 | **[M1 已验证]** 规范在 M1 期间刚换代（2026-07-28），dual-era 适配只花了几十行。持续风险是 modern 那代的 MRTR、`subscriptions/listen` 等新机制尚未实现 |
+| 未实测过真实 MCP 客户端 | 与 Claude Code 实际对接时才暴露不兼容 | curl 已覆盖两代握手与全部错误路径，但真实客户端的行为细节仍需在装有 Revit 的机器上验证 |
 | 模型误操作大批量构件 | 模型损坏 | 写保护默认关 + 规模阈值 + 单步可撤销事务 |
 
 ---
@@ -547,9 +642,11 @@ RevitMCP/
 
 1. ~~目标 Revit 具体版本号~~ **已定**：2019–2024，六版本矩阵见 §9。
 2. ~~Revit 自带 `Newtonsoft.Json.dll` 的确切版本~~ **已消除**：改用自带 JSON 实现，见 §4。
-3. 客户端主要是 Claude Code 还是 Claude Desktop——影响 `Origin` 白名单默认值。
-   （M0 暂按 `http://localhost` / `http://127.0.0.1` / `https://claude.ai` 三项，M1 定稿。）
+3. ~~客户端主要是 Claude Code 还是 Claude Desktop~~ **已降级为非阻塞**：原生客户端不发 `Origin`，
+   白名单只对浏览器来源生效，保持 `http://localhost` / `http://127.0.0.1` / `https://claude.ai` 即可。
 4. 是否需要 SSE 服务端推送（若首批工具都在 5s 内返回，M5 可延后）。
+   **[M1 备注]** 现在所有响应都是 `application/json`，规范允许；
+   一旦有工具超过 ~5s，就必须补 `text/event-stream` 发 `notifications/progress`。
 5. **新增**：2019/2020 的 Revit API 参考程序集停在 2021 年，若届时发现某些 API 在
    2019 上确实缺失（如部分 `FilteredElementCollector` 重载），需决定是降级实现还是把最低版本上调到 2021。
    到 M3 写第一批工具时才会真正暴露。

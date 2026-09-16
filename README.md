@@ -5,8 +5,8 @@
 
 支持 **Revit 2019 – 2024**。架构设计见 [docs/architecture.md](docs/architecture.md)。
 
-> 当前进度：**M0 骨架完成**。插件可加载、Ribbon 可用、配置与日志已就绪；
-> 传输层与协议方法在 M1 接入（此前服务不接受连接，界面文案已注明）。
+> 当前进度：**M3 完成**。工具框架（`[McpTool]` 反射注册 + JSON Schema 自动生成 + 执行管线）
+> 已就位，4 个只读工具可用。写工具的事务管线在 M4。
 
 ---
 
@@ -22,9 +22,15 @@ powershell -ExecutionPolicy Bypass -File build/install.ps1 -RevitYear 2024
 
 启动 Revit，功能区应出现 **RevitMCP** 选项卡。
 
+接入 Claude Code（端口与令牌见 Revit 面板上的「复制接入命令」按钮）：
+
 ```bash
-# 跑不依赖 Revit 的单元测试
-dotnet test tests/RevitMCP.Protocol.Tests/RevitMCP.Protocol.Tests.csproj -c "Debug R24"
+claude mcp add --transport http revit http://127.0.0.1:7801/mcp --header "Authorization: Bearer <token>"
+```
+
+```bash
+# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 58 + HTTP/MCP 端到端 42）
+dotnet test RevitMCP.sln -c "Debug R24"
 ```
 
 卸载：`powershell -ExecutionPolicy Bypass -File build/install.ps1 -RevitYear 2024 -Uninstall`
@@ -52,14 +58,63 @@ dotnet test tests/RevitMCP.Protocol.Tests/RevitMCP.Protocol.Tests.csproj -c "Deb
 ## 项目结构
 
 ```
-src/RevitMCP.Protocol    JSON-RPC 2.0 + MCP 消息 + 自带 JSON 实现   ← 不依赖 Revit
-src/RevitMCP.Transport   TcpListener 迷你 HTTP + SSE               ← 不依赖 Revit（M1）
-src/RevitMCP.Tooling     [McpTool] 注册、Schema 生成、执行管线      ← 不依赖 Revit（M3）
-src/RevitMCP.Addin       Revit 插件入口、Ribbon、调度器、工具实现    ← 唯一引用 Revit API
+src/RevitMCP.Protocol    自带 JSON 实现 + JSON-RPC 2.0 + MCP 方法分发   ← 不依赖 Revit
+src/RevitMCP.Transport   TcpListener 迷你 HTTP + MCP over HTTP 粘合层    ← 不依赖 Revit
+src/RevitMCP.Tooling     调度队列、[McpTool] 注册、Schema 生成、执行管线   ← 不依赖 Revit
+src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、工具 ← 唯一引用 Revit API
 ```
 
-前三个项目刻意不依赖 Revit API：它们能脱离 Revit 直接跑单元测试，
-这也是 CI 上能覆盖大部分逻辑的原因。
+## 现有工具
+
+| 工具 | 作用 |
+|---|---|
+| `revit_get_document_info` | 当前文档标题、路径、活动视图、写入模式是否开启 |
+| `revit_list_categories` | 模型中实际存在构件的类别及数量（查询前先用它确认类别名）|
+| `revit_query_elements` | 按类别查构件，返回 ID / 名称 / 类型 / 标高 |
+| `revit_get_element_parameters` | 批量读参数，同时给出原始值与带单位的显示值 |
+
+全部只读。写工具在 M4。
+
+## 写一个新工具
+
+```csharp
+[McpTool("revit_do_something", Title = "做点什么", Description = "给模型看的说明。", ReadOnly = true)]
+public sealed class DoSomethingTool : RevitTool<DoSomethingInput, DoSomethingOutput>
+{
+    public override DoSomethingOutput Execute(DoSomethingInput input, ToolExecutionContext<UIApplication> context)
+    {
+        var document = RequireDocument(context);   // 此处已在主线程且具备 API context
+        ...
+    }
+}
+
+public sealed class DoSomethingInput
+{
+    [McpParam("要处理的类别", Required = true)]
+    public string Category { get; set; }
+
+    [McpParam("上限，默认 100")]     // int? → 可选；int → 必填
+    public int? Limit { get; set; }
+}
+```
+
+就这些。线程编组、参数绑定与校验、Schema 生成、超时、序列化、错误映射全由管线处理，
+`OnStartup` 时自动扫描注册。失败时抛 `ToolFailureException(McpDomainError.XXX, "原因")`。
+
+前三个项目刻意不依赖 Revit API，这不只是洁癖：**整条 HTTP + MCP 通路能在没装 Revit 的机器上
+端到端测试**，CI 因此能覆盖大部分逻辑。
+
+## 协议支持
+
+同时服务 MCP 的两代形态（规范允许 dual-era 服务端）：
+
+| era | 版本 | 形态 |
+|---|---|---|
+| modern | `2026-07-28` | 无状态；版本与能力随每个请求的 `_meta` 传递；`server/discover`；无会话、无 GET SSE |
+| legacy | `2025-11-25` / `2025-06-18` / `2025-03-26` | `initialize` 握手建立会话 |
+
+判定依据是消息体里有没有 `_meta["io.modelcontextprotocol/protocolVersion"]`。
+之所以不能只看 `MCP-Protocol-Version` 头——2025-06-18 起的 legacy 客户端同样会发这个头。
 
 **零第三方运行时依赖。** 产物只有上述 4 个 DLL。Revit 把所有插件加载进同一个 AppDomain
 且不应用插件自身的绑定重定向，任何外部包都是潜在的版本冲突源——包括 Newtonsoft.Json，
@@ -84,6 +139,10 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、调度器、工具实现 
   中文会变成乱码并导致语法错误。
 - **Revit API 差异只允许出现在 `src/RevitMCP.Addin/Compat/`。** 其他地方一律走那里的兼容方法，
   例如 `ElementId` 在 2024 起由 Int32 变为 Int64。
+- **一切 Revit API 调用必须经 `RevitDispatcher.InvokeAsync` 编组到主线程。** 从 HTTP 线程直接碰
+  `Document` 轻则抛异常、重则崩 Revit。
+- **`REVIT_BUSY` 和 `TIMEOUT` 不是一回事**，不要合并：前者保证模型没被碰过，后者意味着操作已经
+  跑起来、模型可能已变。模型会据此决定要不要重试。
 - 安装前必须关闭 Revit，否则 DLL 被占用。`install.ps1` 会主动检查并拒绝。
 
 ---
@@ -93,8 +152,8 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、调度器、工具实现 
 | | 内容 | 状态 |
 |---|---|---|
 | M0 | 解决方案骨架、版本矩阵、Ribbon、配置、日志、安装脚本 | ✅ 完成 |
-| M1 | TcpListener HTTP + JSON-RPC + `initialize`/`ping` | 待开始 |
-| M2 | `RevitDispatcher`（ExternalEvent 线程编组）+ 超时语义 | 待开始 |
-| M3 | 工具框架 + 首批只读工具 | 待开始 |
+| M1 | TcpListener HTTP + JSON-RPC + dual-era 握手 + Origin/Bearer 校验 | ✅ 完成 |
+| M2 | `DispatchQueue` + `RevitDispatcher` 线程编组、双重超时语义、首个工具 | ✅ 完成 |
+| M3 | `[McpTool]` 注册、Schema 生成、执行管线 + 4 个只读工具 | ✅ 完成 |
 | M4 | 事务管线、失败预处理、对话框拦截、写保护 | 待开始 |
 | M5 | SSE 进度通知、审计日志、多实例发现完善 | 待开始 |
