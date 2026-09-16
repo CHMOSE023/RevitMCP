@@ -121,7 +121,17 @@ namespace RevitMCP.Transport
                     : JsonResponse(200, "OK", error);
             }
 
-            // 8) 分发
+            // 8) 要不要流式。规范把决定权交给客户端：给了 progressToken 才发进度，
+            //    没给就不发。这正好省掉"该不该用 SSE"这个判断——
+            //    没人要进度时，多一条流只是徒增一次连接状态
+            var progressToken = string.Equals(message.Method, "tools/call", StringComparison.Ordinal)
+                ? ProgressToken.From(message.Params)
+                : null;
+
+            if (progressToken != null && AcceptsEventStream(request))
+                return StreamingResponse(message, context, progressToken);
+
+            // 9) 分发
             var result = await _server.DispatchAsync(message, context, cancellationToken).ConfigureAwait(false);
 
             // 通知没有响应体，规范要求 202
@@ -129,6 +139,80 @@ namespace RevitMCP.Transport
 
             return JsonResponse(200, "OK", result);
         }
+
+        private static bool AcceptsEventStream(HttpRequest request)
+        {
+            var accept = request.Header("Accept");
+            return accept != null &&
+                   accept.IndexOf("text/event-stream", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>
+        /// 边跑边推：进度通知一条条发，最后发 JSON-RPC 响应，然后收流。
+        ///
+        /// 响应头在第一个字节写出去的那一刻就定死了，此后再没有改状态码的机会——
+        /// 所以认证、版本、方法存在性这些判断必须全在建流之前做完（上面第 1~7 步）。
+        /// 建流之后出的任何岔子，都只能作为流里的一条错误事件发出去。
+        /// </summary>
+        private HttpResponse StreamingResponse(
+            JsonRpcMessage message, McpRequestContext context, JsonValue progressToken)
+        {
+            return HttpResponse.EventStream(async (stream, cancellationToken) =>
+            {
+                using (var queue = new ProgressQueue(progressToken))
+                {
+                    // 工具在 Revit 主线程上跑，进度在这条 HTTP 线程上写，两者并行推进
+                    var call = _server.DispatchAsync(message, context, cancellationToken, queue);
+                    var pump = PumpProgressAsync(queue, stream, cancellationToken);
+
+                    JsonValue result = null;
+
+                    try
+                    {
+                        result = await call.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // 客户端断了，没有人再需要这条响应
+                    }
+                    catch (Exception ex)
+                    {
+                        result = JsonRpcMessage.Error(message.Id, JsonRpcErrorCodes.InternalError, ex.Message);
+                    }
+                    finally
+                    {
+                        // 无论如何都要让泵收工，否则这条连接会一直挂着
+                        queue.Complete();
+                    }
+
+                    try { await pump.ConfigureAwait(false); }
+                    catch (OperationCanceledException) { }
+
+                    if (result != null)
+                        await WriteEventAsync(stream, result, cancellationToken).ConfigureAwait(false);
+                }
+            });
+        }
+
+        private static async Task PumpProgressAsync(
+            ProgressQueue queue, ResponseStream stream, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                var notification = await queue.TakeAsync(cancellationToken).ConfigureAwait(false);
+                if (notification == null) return;   // 工具已返回且队列已排空
+
+                await WriteEventAsync(stream, notification, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// 一条 SSE 事件。JSON 必须是单行——data 行里的换行会被当成事件分隔，
+        /// 所以这里绝不能用缩进过的 JSON。
+        /// </summary>
+        private static Task WriteEventAsync(
+            ResponseStream stream, JsonValue payload, CancellationToken cancellationToken) =>
+            stream.WriteAsync("data: " + payload.ToJson() + "\n\n", cancellationToken);
 
         /// <summary>
         /// 规范：带 modern 每请求 _meta 的按本版无状态处理；initialize 选择 legacy 语义。

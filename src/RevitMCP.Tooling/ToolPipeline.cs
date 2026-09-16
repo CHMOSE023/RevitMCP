@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using RevitMCP.Protocol.Json;
@@ -17,6 +18,12 @@ namespace RevitMCP.Tooling
         public Func<int> MaxElementsPerWrite { get; set; } = () => 500;
         public Func<int> DefaultTimeoutSeconds { get; set; } = () => 60;
         public Action<string, Exception> Log { get; set; } = (m, e) => { };
+
+        /// <summary>
+        /// 每次 tools/call 结束后收到一条审计记录，无论成败。
+        /// 默认什么都不做——Tooling 层不认识文件系统，落盘由 Addin 决定。
+        /// </summary>
+        public Action<ToolAuditEntry> Audit { get; set; } = entry => { };
     }
 
     /// <summary>工具自己抛出的、带领域错误码的失败。会原样呈现给模型。</summary>
@@ -59,11 +66,46 @@ namespace RevitMCP.Tooling
 
         public IReadOnlyList<ToolDefinition> ListTools() => _registry.Definitions;
 
+        /// <summary>不关心进度时的便利重载。</summary>
+        public Task<ToolCallResult> CallToolAsync(
+            string name, JsonValue arguments, CancellationToken cancellationToken) =>
+            CallToolAsync(name, arguments, NullProgressSink.Instance, cancellationToken);
+
         public async Task<ToolCallResult> CallToolAsync(
-            string name, JsonValue arguments, CancellationToken cancellationToken)
+            string name, JsonValue arguments, IProgressSink progress, CancellationToken cancellationToken)
+        {
+            // 审计要回答的是"模型到底对这个项目做了什么"，所以每条路径都要记一条，
+            // 包括被写保护拒掉的——一串被拒的写请求本身就是值得看见的信号。
+            // 初值设成"被拒"：没走到执行那一步就是没走到
+            var entry = new ToolAuditEntry
+            {
+                ToolName = name,
+                Arguments = ArgumentSummary.Of(arguments),
+                Outcome = ToolOutcome.Rejected
+            };
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                return await ExecuteAsync(name, arguments, entry, progress, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                entry.DurationMs = stopwatch.ElapsedMilliseconds;
+                try { _options.Audit?.Invoke(entry); }
+                catch { /* 审计写失败绝不能影响调用本身的结果 */ }
+            }
+        }
+
+        private async Task<ToolCallResult> ExecuteAsync(
+            string name, JsonValue arguments, ToolAuditEntry entry, IProgressSink progress,
+            CancellationToken cancellationToken)
         {
             // 工具不存在属于请求结构问题，模型很难自我纠正 → 走 JSON-RPC 错误而非 isError
             if (!_registry.TryGet(name, out var tool)) throw new ToolNotFoundException(name);
+
+            entry.ReadOnly = tool.IsReadOnly;
 
             object input;
             try
@@ -73,13 +115,13 @@ namespace RevitMCP.Tooling
             catch (ToolInputException ex)
             {
                 // 参数错误反而要走 isError：模型看得见就能改对再来一次
-                return Failure(McpDomainError.InvalidParameter, ex.Message);
+                return Failure(entry, ToolOutcome.Rejected, McpDomainError.InvalidParameter, ex.Message);
             }
 
             var writeEnabled = Invoke(_options.WriteEnabled, false);
             if (!tool.IsReadOnly && !writeEnabled)
             {
-                return Failure(McpDomainError.WriteDisabled,
+                return Failure(entry, ToolOutcome.Rejected, McpDomainError.WriteDisabled,
                     "工具 " + name + " 会修改模型，但写入模式当前未开启。" +
                     "请让用户在 Revit 的 RevitMCP 面板上点击「写入：关」将其开启。");
             }
@@ -94,7 +136,8 @@ namespace RevitMCP.Tooling
             var warnings = new ConcurrentQueue<string>();
             var context = new ToolExecutionContext<TContext>(
                 default(TContext), writeEnabled, Invoke(_options.MaxElementsPerWrite, 500),
-                cancellationToken, new ConcurrentQueueAdapter(warnings));
+                cancellationToken, new ConcurrentQueueAdapter(warnings),
+                progress ?? NullProgressSink.Instance);
 
             try
             {
@@ -116,6 +159,12 @@ namespace RevitMCP.Tooling
 
                 var payload = AttachWarnings(JsonMapper.ToJson(output), warnings);
 
+                entry.Outcome = ToolOutcome.Succeeded;
+                entry.WarningCount = warnings.Count;
+
+                var reporter = output as IReportsAffectedElements;
+                if (reporter != null) entry.AffectedElements = reporter.AffectedElements;
+
                 // 规范建议：返回 structuredContent 的同时，也把序列化后的 JSON 放进文本块
                 return ToolCallResult.Ok(payload.ToJson(indented: true), payload);
             }
@@ -125,39 +174,42 @@ namespace RevitMCP.Tooling
             }
             catch (ToolFailureException ex)
             {
-                return Failure(ex.Code, ex.Message);
+                return Failure(entry, ToolOutcome.Failed, ex.Code, ex.Message);
             }
             catch (ToolInputException ex)
             {
                 // 有些校验只有拿到 Revit 上下文才做得了
-                return Failure(McpDomainError.InvalidParameter, ex.Message);
+                return Failure(entry, ToolOutcome.Failed, McpDomainError.InvalidParameter, ex.Message);
             }
             catch (RevitBusyException ex)
             {
                 _options.Log(name + "：" + ex.Message, null);
-                return Failure(McpDomainError.RevitBusy, ex.Message);
+                // 工作从未开始，模型没被碰过——记 Rejected 而非 Failed。
+                // 审计上的这条区分和 REVIT_BUSY / TIMEOUT 的区分是同一件事
+                return Failure(entry, ToolOutcome.Rejected, McpDomainError.RevitBusy, ex.Message);
             }
             catch (DispatchTimeoutException ex)
             {
                 _options.Log(name + "：" + ex.Message, null);
-                return Failure(McpDomainError.Timeout, ex.Message);
+                // 已经跑起来了，模型可能已被部分修改
+                return Failure(entry, ToolOutcome.Failed, McpDomainError.Timeout, ex.Message);
             }
             catch (DispatchStoppedException ex)
             {
-                return Failure(McpDomainError.ServerStopped, ex.Message);
+                return Failure(entry, ToolOutcome.Rejected, McpDomainError.ServerStopped, ex.Message);
             }
             catch (Exception ex)
             {
                 _options.Log(name + " 执行失败。", ex);
                 // 不把堆栈丢给模型：它既看不懂也帮不上忙，只会占上下文
-                return Failure(null, name + " 执行失败：" + ex.Message);
+                return Failure(entry, ToolOutcome.Failed, null, name + " 执行失败：" + ex.Message);
             }
         }
 
         private static ToolExecutionContext<TContext> WithHost(ToolExecutionContext<TContext> template, TContext host) =>
             new ToolExecutionContext<TContext>(
                 host, template.WriteEnabled, template.MaxElementsPerWrite, template.CancellationToken,
-                template.Warnings);
+                template.Warnings, template.Progress);
 
         /// <summary>
         /// 把被抑制的警告并入工具输出。
@@ -200,8 +252,13 @@ namespace RevitMCP.Tooling
             public void RemoveAt(int index) => throw new NotSupportedException();
         }
 
-        private static ToolCallResult Failure(string code, string message) =>
-            ToolCallResult.Failure(code == null ? message : McpDomainError.Format(code, message));
+        private static ToolCallResult Failure(
+            ToolAuditEntry entry, ToolOutcome outcome, string code, string message)
+        {
+            entry.Outcome = outcome;
+            entry.ErrorCode = code;
+            return ToolCallResult.Failure(code == null ? message : McpDomainError.Format(code, message));
+        }
 
         private static T Invoke<T>(Func<T> accessor, T fallback)
         {

@@ -5,8 +5,8 @@
 
 支持 **Revit 2019 – 2024**。架构设计见 [docs/architecture.md](docs/architecture.md)。
 
-> 当前进度：**M4 完成**。写入管线已就位——每个写工具跑在独立事务里，
-> 配两道防模态框的防线，失败必回滚。4 个只读工具 + 2 个写工具可用。
+> 当前进度：**M5 完成**。SSE 进度通知、工具调用审计、多实例发现都已就位。
+> 4 个只读工具 + 2 个写工具可用。
 
 ---
 
@@ -29,7 +29,7 @@ claude mcp add --transport http revit http://127.0.0.1:7801/mcp --header "Author
 ```
 
 ```bash
-# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 71 + HTTP/MCP 端到端 42）
+# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 87 + HTTP/MCP 端到端 54）
 dotnet test RevitMCP.sln -c "Debug R24"
 ```
 
@@ -124,6 +124,45 @@ public sealed class DoSomethingInput
 前三个项目刻意不依赖 Revit API，这不只是洁癖：**整条 HTTP + MCP 通路能在没装 Revit 的机器上
 端到端测试**，CI 因此能覆盖大部分逻辑。
 
+## 进度通知
+
+长操作（批量改几百个构件之类）会通过 SSE 推 `notifications/progress`，
+免得客户端把一个正常的慢操作当成卡死。
+
+**发不发进度由客户端决定**：请求的 `params._meta.progressToken` 给了就发，
+响应转成 `text/event-stream`；没给就还是单个 `application/json` 响应。
+规范如此规定，也正好省掉"该不该用 SSE"这个判断——没人要就不发。
+
+工具侧只有一行：
+
+```csharp
+foreach (var element in elements)
+{
+    // ...
+    ProgressTicker.Tick(context.Progress, ++done, total, "已修改");
+}
+```
+
+`context.Progress` 永远不为 null（没人听时是空实现），节流到每 25 个一条。
+上报从不阻塞：工具在 Revit 主线程上跑，通知在 HTTP 线程上写，中间隔着一条队列。
+
+## 审计
+
+每次 `tools/call` 在日志里留一行，成功、失败、被拒都记：
+
+```
+2026-09-16 11:42:03.117 [AUDIT] revit_set_element_parameters [写] 成功 · 214ms · 影响 3 个构件 · 1 条警告 · elementIds=["198749","234869",…共 3 项], parameterName="注释"
+2026-09-16 11:42:31.882 [AUDIT] revit_create_wall [写] 被拒/WRITE_DISABLED · 0ms · startX=0, startY=0, endX=6000, endY=0
+```
+
+审计要回答的是"模型到底被动过什么"，所以：
+
+- **被拒的也记。** 一串被写保护拒掉的写请求本身就是值得看见的信号。
+- **`REVIT_BUSY` 记「被拒」，`TIMEOUT` 记「失败」。** 前者模型没被碰过，后者可能改了一半——
+  事后翻日志时这两者绝不能混为一谈。
+- **入参只记摘要。** 500 个 ID 原样写进日志等于没写。
+- **绕过 `logLevel`。** 把日志级别调高不该让审计悄悄消失，那恰恰是最需要它的时候。
+
 ## 协议支持
 
 同时服务 MCP 的两代形态（规范允许 dual-era 服务端）：
@@ -148,7 +187,7 @@ public sealed class DoSomethingInput
 |---|---|
 | `%APPDATA%\RevitMCP\config.json` | 端口、访问令牌、写入开关等 |
 | `%LOCALAPPDATA%\RevitMCP\logs\revit-<pid>.log` | 每进程一个日志文件 |
-| `%LOCALAPPDATA%\RevitMCP\instances\revit-<pid>.json` | 多实例发现：客户端据此知道该连哪个端口 |
+| `%LOCALAPPDATA%\RevitMCP\instances\revit-<pid>.json` | 多实例发现：端口、活动文档、写入开关；进程退出时删除，启动时清理残留 |
 
 ---
 
@@ -180,4 +219,4 @@ public sealed class DoSomethingInput
 | M2 | `DispatchQueue` + `RevitDispatcher` 线程编组、双重超时语义、首个工具 | ✅ 完成 |
 | M3 | `[McpTool]` 注册、Schema 生成、执行管线 + 4 个只读工具 | ✅ 完成 |
 | M4 | 事务管线、失败预处理、对话框拦截、写保护、规模阈值 + 2 个写工具 | ✅ 完成 |
-| M5 | SSE 进度通知、审计日志、多实例发现完善 | 待开始 |
+| M5 | SSE 进度通知、审计日志、多实例发现完善 | ✅ 完成 |

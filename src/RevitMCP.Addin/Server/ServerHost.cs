@@ -43,6 +43,22 @@ namespace RevitMCP.Addin.Server
 
         public ServerState State { get; private set; } = ServerState.Stopped;
 
+        /// <summary>
+        /// 当前活动文档的标题，写进实例发现文件。
+        /// 由 App 在 ViewActivated 时喂进来——ServerHost 够不到 UIApplication，
+        /// 而客户端面对多个 Revit 实例时，"哪个开着我要的模型"正是它要问的问题。
+        /// </summary>
+        public string ActiveDocumentTitle { get; private set; }
+
+        /// <summary>活动文档变了就刷新实例文件；没变则什么都不做（ViewActivated 触发得很频繁）。</summary>
+        public void SetActiveDocument(string title)
+        {
+            if (string.Equals(ActiveDocumentTitle, title, StringComparison.Ordinal)) return;
+
+            ActiveDocumentTitle = title;
+            if (IsRunning) WriteInstanceFile();
+        }
+
         /// <summary>实际监听端口（可能因端口占用而不等于配置值）。未启动时为 0。</summary>
         public int Port { get; private set; }
 
@@ -170,7 +186,8 @@ namespace RevitMCP.Addin.Server
                 WriteEnabled = () => _config.WriteEnabled,
                 MaxElementsPerWrite = () => _config.MaxElementsPerWrite,
                 DefaultTimeoutSeconds = () => _config.DefaultToolTimeoutSeconds,
-                Log = LogFrom
+                Log = LogFrom,
+                Audit = entry => Log.Audit(entry.ToString())
             },
             // 写作用域只作用于非只读工具：开事务、装失败预处理、拦模态框（M4）
             new RevitWriteScope());
@@ -206,6 +223,7 @@ namespace RevitMCP.Addin.Server
                     .Set("port", Port)
                     .Set("endpoint", "http://127.0.0.1:" + Port + "/mcp")
                     .Set("revitVersion", RevitVersionInfo.Year)
+                    .Set("activeDocument", ActiveDocumentTitle)
                     .Set("writeEnabled", _config.WriteEnabled)
                     .Set("startedAt", DateTime.Now.ToString("o"))
                     .ToJson(indented: true);

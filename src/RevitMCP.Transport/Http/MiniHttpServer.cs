@@ -163,7 +163,7 @@ namespace RevitMCP.Transport.Http
                             {
                                 await WriteResponseAsync(stream,
                                     HttpResponse.Text(ex.StatusCode, ex.ReasonPhrase, ex.Message),
-                                    close: true).ConfigureAwait(false);
+                                    close: true, cancellationToken: shutdown).ConfigureAwait(false);
                                 return;
                             }
 
@@ -186,7 +186,7 @@ namespace RevitMCP.Transport.Http
                             var close = response.CloseConnection ||
                                         string.Equals(request.Header("Connection"), "close", StringComparison.OrdinalIgnoreCase);
 
-                            await WriteResponseAsync(stream, response, close).ConfigureAwait(false);
+                            await WriteResponseAsync(stream, response, close, shutdown).ConfigureAwait(false);
                             if (close) return;
                         }
                     }
@@ -200,8 +200,10 @@ namespace RevitMCP.Transport.Http
             }
         }
 
-        private static async Task WriteResponseAsync(Stream stream, HttpResponse response, bool close)
+        private static async Task WriteResponseAsync(
+            Stream stream, HttpResponse response, bool close, CancellationToken cancellationToken)
         {
+            var streaming = response.StreamBody != null;
             var body = response.Body ?? new byte[0];
 
             var head = new StringBuilder();
@@ -211,7 +213,11 @@ namespace RevitMCP.Transport.Http
             if (!string.IsNullOrEmpty(response.ContentType))
                 head.Append("Content-Type: ").Append(response.ContentType).Append("\r\n");
 
-            head.Append("Content-Length: ").Append(body.Length.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
+            // 流式响应事先不知道长度，改用分块传输——两者不能同时出现
+            if (streaming) head.Append("Transfer-Encoding: chunked\r\n");
+            else head.Append("Content-Length: ")
+                     .Append(body.Length.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
+
             head.Append("Connection: ").Append(close ? "close" : "keep-alive").Append("\r\n");
 
             foreach (var header in response.Headers)
@@ -220,9 +226,23 @@ namespace RevitMCP.Transport.Http
             head.Append("\r\n");
 
             var headBytes = Encoding.ASCII.GetBytes(head.ToString());
-            await stream.WriteAsync(headBytes, 0, headBytes.Length).ConfigureAwait(false);
-            if (body.Length > 0) await stream.WriteAsync(body, 0, body.Length).ConfigureAwait(false);
-            await stream.FlushAsync().ConfigureAwait(false);
+            await stream.WriteAsync(headBytes, 0, headBytes.Length, cancellationToken).ConfigureAwait(false);
+
+            if (!streaming)
+            {
+                if (body.Length > 0)
+                    await stream.WriteAsync(body, 0, body.Length, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            // 头已经发出去了，此刻再改状态码已经来不及——所以流式响应的
+            // 一切可预见的失败都必须在建流之前判掉
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            var writer = new ResponseStream(stream);
+            await response.StreamBody(writer, cancellationToken).ConfigureAwait(false);
+            await writer.CompleteAsync(cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>

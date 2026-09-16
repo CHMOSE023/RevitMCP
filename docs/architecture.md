@@ -122,11 +122,16 @@ Revit 可能开多个实例。启动时从 `7801` 起探测第一个可用端口
 
 ```
 %LOCALAPPDATA%\RevitMCP\instances\revit-<pid>.json
-{ "pid": 12345, "port": 7801, "revitVersion": "2024",
-  "activeDocument": "项目1.rvt", "startedAt": "...", "writeEnabled": false }
+{ "pid": 12345, "port": 7801, "endpoint": "http://127.0.0.1:7801/mcp",
+  "revitVersion": 2024, "activeDocument": "项目1", "startedAt": "...", "writeEnabled": false }
 ```
 
 进程退出时删除（并在启动时清理 pid 已不存在的残留文件）。这样用户/脚本能知道该连哪个端口。
+
+> **[M5 补完]** `activeDocument` 靠订阅 `UIControlledApplication.ViewActivated` 维持——
+> 用户切换文档时刷新，标题没变就不写盘（该事件触发得很频繁）。
+> 写入开关切换时同样会刷新：客户端面对多个 Revit 实例时，
+> "哪个开着我要的模型、哪个能写"正是它要问的两个问题。
 
 ---
 
@@ -305,7 +310,20 @@ public sealed class RevitDispatcher : IExternalEventHandler
 4. **时间预算 200ms** 是为了不让一批长任务把 Revit UI 冻住。单个工具自身超时另计（默认 60s，工具可声明覆盖）。
 
 ### 长任务与进度
-超过 ~5s 的工具（如全模型遍历）应通过 SSE 发 `notifications/progress`，避免客户端判定超时。工具通过注入的 `IProgressReporter` 上报。
+超过 ~5s 的工具（如全模型遍历）应通过 SSE 发 `notifications/progress`，避免客户端判定超时。
+
+> **[M5 已实现]** 接口最终叫 `IProgressSink`，由管线注入到 `ToolExecutionContext.Progress`，
+> 工具侧用 `ProgressTicker.Tick(context.Progress, done, total, "已修改")` 一行搞定。
+>
+> **触发条件交给客户端**：请求的 `params._meta.progressToken` 给了才发进度、才转 SSE。
+> 这是规范的规定，也正好回答了附录第 4 条那个悬而未决的问题——
+> 不需要服务端去猜"这个工具会不会慢"，没人要进度时连流都不开。
+>
+> **线程边界在 `ProgressQueue`。** 工具在 Revit 主线程上跑，SSE 在处理该请求的 HTTP 线程上写。
+> 上报只是入队，永远不阻塞——否则一个卡住的 socket 就能把 Revit 主线程拖死。
+>
+> 传输层为此补了分块响应体（`ResponseStream`）。选 chunked 而不是"写完就关连接"，
+> 是因为带进度的调用往往接二连三，每次重建连接不值当。
 
 ---
 
@@ -458,7 +476,18 @@ uiApp.DialogBoxShowing += OnDialogBoxShowing;   // 工具执行期间启用，�
 | `Origin` 校验 | MCP 规范对本地 HTTP 服务的明确要求，防 DNS rebinding。无 `Origin` 头（原生客户端）放行，有则必须在白名单内 |
 | 工具白名单 | `config.json` 可禁用指定工具 |
 | 写保护开关 | 见 §7 |
-| 审计日志 | 每次 `tools/call` 记录工具名、参数摘要、影响构件数、耗时、结果 |
+| 审计日志 | **[M5 已实现]** 每次 `tools/call` 记一行 `[AUDIT]`，含工具名、参数摘要、影响构件数、耗时、结果。见下 |
+
+### 审计（M5）
+
+`ToolPipeline` 在每条返回路径上产出一条 `ToolAuditEntry`，由 Addin 落到日志。几条不显然的决定：
+
+- **被拒的调用也记。** 一串被写保护拒掉的写请求本身就是信号，不记就看不见。
+- **`REVIT_BUSY` 记 `Rejected`，`TIMEOUT` 记 `Failed`。** 这和 §4 那张表里"可否安全重试"
+  是同一条线：前者模型没被碰过，后者可能已被部分修改。事后翻日志时混为一谈会得出错误结论。
+- **影响构件数由输出 DTO 通过 `IReportsAffectedElements` 报告**，而不是让工具往上下文里回填计数——
+  输出本来就知道这个数，多要求一次调用只会出现漏调而审计悄悄记 0。
+- **绕过 `logLevel`。** 审计是安全措施，不该因为用户把日志级别调高就消失。
 
 ---
 
@@ -667,7 +696,7 @@ RevitMCP/
 | **M2 调度** ✅ | `DispatchQueue` + `RevitDispatcher` + 双重超时语义 + 首个诊断工具 | 19 个调度测试（含变异验证）；**冒烟项 6 待在 Revit 中验证** |
 | **M3 工具框架** ✅ | `[McpTool]`、注册表、Schema 生成、双向映射、执行管线 + 4 个只读工具 | 58 个框架测试 + 4 个 HTTP 端到端；curl 验证 `tools/list`/`tools/call`。**真实 Revit 工具待在 Revit 中验证** |
 | **M4 写入** ✅ | 事务管线、失败预处理、对话框拦截、写保护、规模阈值 + 2 个写工具 | 13 个写作用域测试（共 146 个）；六版本矩阵全编译。**冒烟项 4/5/7 待在 Revit 中验证** |
-| **M5 打磨** | SSE 进度通知、日志与审计、多实例发现、文档 | 完整冒烟清单通过 |
+| **M5 打磨** ✅ | SSE 进度通知、日志与审计、多实例发现、文档 | 41 个新测试（共 174 个）；六版本矩阵全编译。**冒烟项 6 待在 Revit 中验证** |
 
 首批工具（覆盖典型读写形态，用来验证框架而非堆功能）：
 
@@ -710,9 +739,9 @@ RevitMCP/
 2. ~~Revit 自带 `Newtonsoft.Json.dll` 的确切版本~~ **已消除**：改用自带 JSON 实现，见 §4。
 3. ~~客户端主要是 Claude Code 还是 Claude Desktop~~ **已降级为非阻塞**：原生客户端不发 `Origin`，
    白名单只对浏览器来源生效，保持 `http://localhost` / `http://127.0.0.1` / `https://claude.ai` 即可。
-4. 是否需要 SSE 服务端推送（若首批工具都在 5s 内返回，M5 可延后）。
-   **[M1 备注]** 现在所有响应都是 `application/json`，规范允许；
-   一旦有工具超过 ~5s，就必须补 `text/event-stream` 发 `notifications/progress`。
+4. ~~是否需要 SSE 服务端推送~~ **[M5 已落地]** 做了，但触发条件不是"工具慢不慢"，
+   而是客户端有没有在 `params._meta` 里给 `progressToken`——规范把这个决定权交给了客户端，
+   服务端不必去猜。没给 token 时响应仍是 `application/json`，与 M1~M4 的行为完全一致。
 5. **新增**：2019/2020 的 Revit API 参考程序集停在 2021 年，若届时发现某些 API 在
    2019 上确实缺失（如部分 `FilteredElementCollector` 重载），需决定是降级实现还是把最低版本上调到 2021。
    到 M3 写第一批工具时才会真正暴露。

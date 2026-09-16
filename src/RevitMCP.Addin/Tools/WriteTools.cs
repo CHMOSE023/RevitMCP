@@ -42,7 +42,7 @@ namespace RevitMCP.Addin.Tools
         public string NewValue { get; set; }
     }
 
-    public sealed class SetParametersOutput
+    public sealed class SetParametersOutput : IReportsAffectedElements
     {
         [McpParam("被修改的参数名")]
         public string ParameterName { get; set; }
@@ -52,6 +52,9 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("每个构件的新旧值")]
         public List<ParameterChange> Elements { get; set; } = new List<ParameterChange>();
+
+        // 显式实现：不是公共属性，所以不会被序列化成多出来的一个输出字段
+        int IReportsAffectedElements.AffectedElements => Changed;
     }
 
     [McpTool("revit_set_element_parameters",
@@ -84,6 +87,8 @@ namespace RevitMCP.Addin.Tools
             var targets = Resolve(document, input, context);
 
             var output = new SetParametersOutput { ParameterName = input.ParameterName };
+            var total = targets.Count;
+            var done = 0;
 
             foreach (var target in targets)
             {
@@ -99,6 +104,9 @@ namespace RevitMCP.Addin.Tools
                     OldValue = before,
                     NewValue = DisplayOf(target.Parameter)
                 });
+
+                done++;
+                ProgressTicker.Tick(context.Progress, done, total, "已修改");
             }
 
             output.Changed = output.Elements.Count;
@@ -397,7 +405,7 @@ namespace RevitMCP.Addin.Tools
         public bool? Structural { get; set; }
     }
 
-    public sealed class CreateWallOutput
+    public sealed class CreateWallOutput : IReportsAffectedElements
     {
         [McpParam("新建墙的构件 ID")]
         public string Id { get; set; }
@@ -413,6 +421,8 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("墙高，毫米")]
         public double HeightMm { get; set; }
+
+        int IReportsAffectedElements.AffectedElements => 1;
     }
 
     [McpTool("revit_create_wall",

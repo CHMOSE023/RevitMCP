@@ -328,10 +328,14 @@ namespace RevitMCP.Addin.Tools
                     "一次最多读取 " + MaxElements + " 个构件，本次传入 " + input.ElementIds.Count + " 个。请分批调用。");
 
             var output = new GetParametersOutput();
+            var total = input.ElementIds.Count;
+            var done = 0;
 
             foreach (var raw in input.ElementIds)
             {
                 context.CancellationToken.ThrowIfCancellationRequested();
+                done++;
+                ProgressTicker.Tick(context.Progress, done, total, "已读取");
 
                 if (!ElementIdCompat.TryParse(raw, out var elementId))
                 {

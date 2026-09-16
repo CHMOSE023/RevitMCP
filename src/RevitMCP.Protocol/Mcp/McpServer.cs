@@ -56,7 +56,8 @@ namespace RevitMCP.Protocol.Mcp
         /// 任何未预料的异常都会被兜成 -32603，绝不让异常穿透到连接处理循环。
         /// </summary>
         public async Task<JsonValue> DispatchAsync(
-            JsonRpcMessage message, McpRequestContext context, CancellationToken cancellationToken)
+            JsonRpcMessage message, McpRequestContext context, CancellationToken cancellationToken,
+            IProgressSink progress = null)
         {
             if (message.IsNotification)
             {
@@ -81,7 +82,8 @@ namespace RevitMCP.Protocol.Mcp
                         return JsonRpcMessage.Result(message.Id, ListTools(context));
 
                     case "tools/call":
-                        return await CallToolAsync(message, context, cancellationToken).ConfigureAwait(false);
+                        return await CallToolAsync(message, context, progress, cancellationToken)
+                            .ConfigureAwait(false);
 
                     default:
                         return JsonRpcMessage.Error(message.Id,
@@ -135,7 +137,8 @@ namespace RevitMCP.Protocol.Mcp
         }
 
         private async Task<JsonValue> CallToolAsync(
-            JsonRpcMessage message, McpRequestContext context, CancellationToken cancellationToken)
+            JsonRpcMessage message, McpRequestContext context, IProgressSink progress,
+            CancellationToken cancellationToken)
         {
             var nameValue = message.Params["name"];
             if (nameValue == null || nameValue.Kind != JsonKind.String || nameValue.AsString.Length == 0)
@@ -149,7 +152,8 @@ namespace RevitMCP.Protocol.Mcp
             try
             {
                 var result = await _tools
-                    .CallToolAsync(nameValue.AsString, arguments, cancellationToken)
+                    .CallToolAsync(nameValue.AsString, arguments,
+                        progress ?? (IProgressSink)NullProgressSink.Instance, cancellationToken)
                     .ConfigureAwait(false);
                 return JsonRpcMessage.Result(message.Id, result.ToJson(context));
             }

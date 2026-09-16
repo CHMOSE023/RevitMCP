@@ -16,13 +16,15 @@ namespace RevitMCP.Tooling
     public sealed class ToolExecutionContext<TContext>
     {
         public ToolExecutionContext(TContext host, bool writeEnabled, int maxElementsPerWrite,
-            CancellationToken cancellationToken, IList<string> warnings = null)
+            CancellationToken cancellationToken, IList<string> warnings = null,
+            IProgressSink progress = null)
         {
             Host = host;
             WriteEnabled = writeEnabled;
             MaxElementsPerWrite = maxElementsPerWrite;
             CancellationToken = cancellationToken;
             Warnings = warnings ?? new List<string>();
+            Progress = progress ?? NullProgressSink.Instance;
         }
 
         public TContext Host { get; }
@@ -36,6 +38,13 @@ namespace RevitMCP.Tooling
         /// 工具作者往里 Add 即可，不必在自己的 Output DTO 里另开一个字段。
         /// </summary>
         public IList<string> Warnings { get; }
+
+        /// <summary>
+        /// 进度上报口。永远不为 null——客户端没要进度时是空实现，
+        /// 工具照常调用即可，不必到处判空。
+        /// 长循环里顺手报一下，客户端才不会把一个正常的慢操作当成卡死。
+        /// </summary>
+        public IProgressSink Progress { get; }
     }
 
     /// <summary>注册表看到的工具形态（已擦除泛型）。工具作者不直接实现它。</summary>

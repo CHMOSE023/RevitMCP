@@ -55,6 +55,10 @@ namespace RevitMCP.Addin
                 Server = new ServerHost(Config, Dispatcher);
                 Server.StateChanged += (s, e) => _ribbon?.Refresh(Server, Config.WriteEnabled);
 
+                // 让实例发现文件跟上用户切换文档。ViewActivated 是能拿到 Document 的
+                // 最早时机——UIControlledApplication 本身够不到 ActiveUIDocument
+                application.ViewActivated += OnViewActivated;
+
                 _ribbon = RibbonController.Build(application);
                 _ribbon.Refresh(Server, Config.WriteEnabled);
 
@@ -90,6 +94,9 @@ namespace RevitMCP.Addin
         {
             try
             {
+                try { application.ViewActivated -= OnViewActivated; }
+                catch (Exception ex) { Log.Error("解绑 ViewActivated 失败。", ex); }
+
                 Server?.Stop();
                 // 先停服务再停调度器：反过来的话，正在处理中的请求会拿到 SERVER_STOPPED 而不是正常结果
                 Dispatcher?.Shutdown();
@@ -107,6 +114,20 @@ namespace RevitMCP.Addin
         }
 
         public void RefreshRibbon() => _ribbon?.Refresh(Server, Config.WriteEnabled);
+
+        private void OnViewActivated(object sender, Autodesk.Revit.UI.Events.ViewActivatedEventArgs e)
+        {
+            try
+            {
+                var document = e.Document;
+                Server?.SetActiveDocument(document == null ? null : document.Title);
+            }
+            catch (Exception ex)
+            {
+                // 事件处理器里抛异常会被 Revit 当成插件故障，可能直接禁用插件
+                Log.Error("刷新活动文档失败。", ex);
+            }
+        }
 
         /// <summary>
         /// 构建目标版本与实际宿主不一致时告警。

@@ -176,7 +176,8 @@ namespace RevitMCP.Server.Tests
 
         public IReadOnlyList<ToolDefinition> ListTools() => _tools;
 
-        public Task<ToolCallResult> CallToolAsync(string name, JsonValue arguments, CancellationToken cancellationToken)
+        public Task<ToolCallResult> CallToolAsync(
+            string name, JsonValue arguments, IProgressSink progress, CancellationToken cancellationToken)
         {
             if (name != "echo") throw new ToolNotFoundException(name);
 

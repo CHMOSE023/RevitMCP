@@ -81,8 +81,12 @@ namespace RevitMCP.Protocol.Mcp
         /// <summary>规范要求顺序稳定，以便客户端缓存工具列表。</summary>
         IReadOnlyList<ToolDefinition> ListTools();
 
-        /// <summary>工具不存在时抛 <see cref="ToolNotFoundException"/>。</summary>
-        Task<ToolCallResult> CallToolAsync(string name, JsonValue arguments, CancellationToken cancellationToken);
+        /// <summary>
+        /// 工具不存在时抛 <see cref="ToolNotFoundException"/>。
+        /// <paramref name="progress"/> 在客户端没要进度时是 <see cref="NullProgressSink"/>，永远不为 null。
+        /// </summary>
+        Task<ToolCallResult> CallToolAsync(
+            string name, JsonValue arguments, IProgressSink progress, CancellationToken cancellationToken);
     }
 
     public sealed class ToolNotFoundException : Exception
@@ -102,7 +106,8 @@ namespace RevitMCP.Protocol.Mcp
 
         public IReadOnlyList<ToolDefinition> ListTools() => None;
 
-        public Task<ToolCallResult> CallToolAsync(string name, JsonValue arguments, CancellationToken cancellationToken) =>
+        public Task<ToolCallResult> CallToolAsync(
+            string name, JsonValue arguments, IProgressSink progress, CancellationToken cancellationToken) =>
             throw new ToolNotFoundException(name);
     }
 }

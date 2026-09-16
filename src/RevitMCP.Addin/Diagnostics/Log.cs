@@ -50,15 +50,27 @@ namespace RevitMCP.Addin.Diagnostics
         public static void Warn(string message) => Write(LogLevel.Warning, message, null);
         public static void Error(string message, Exception ex = null) => Write(LogLevel.Error, message, ex);
 
+        /// <summary>
+        /// 一条工具调用审计。
+        ///
+        /// 刻意绕过 <see cref="MinimumLevel"/>：审计是安全措施，
+        /// 不该因为用户把日志级别调高就悄悄消失——那恰恰是最需要它的时候。
+        /// </summary>
+        public static void Audit(string message) => Emit("AUDIT", message, null);
+
         private static void Write(LogLevel level, string message, Exception ex)
         {
             if (level < MinimumLevel) return;
+            Emit(level.ToString().ToUpperInvariant(), message, ex);
+        }
 
+        private static void Emit(string tag, string message, Exception ex)
+        {
             try
             {
                 var sb = new StringBuilder();
                 sb.Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture))
-                  .Append(" [").Append(level.ToString().ToUpperInvariant()).Append("] ")
+                  .Append(" [").Append(tag).Append("] ")
                   .Append(message);
                 if (ex != null) sb.AppendLine().Append(ex);
 
