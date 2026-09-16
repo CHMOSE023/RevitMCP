@@ -401,6 +401,7 @@ namespace RevitMCP.Addin.Tools
                       "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
                       "回执里的 areaSqm 是关键：**它为 0 说明那个点周围的墙没有围成闭合区域**，" +
                       "房间虽然建出来了却没有面积。建完请核对这个字段，别只看有没有报错。",
+        Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class CreateRoomsTool : RevitTool<CreateRoomsInput, CreateRoomsOutput>
     {

@@ -221,8 +221,9 @@ namespace RevitMCP.Tooling
                         var hosted = WithHost(context, host);
 
                         // 只读工具不开事务：既省一次 Revit 事务开销，
-                        // 也保证"只读"这个承诺在实现上真的成立
-                        return tool.IsReadOnly
+                        // 也保证"只读"这个承诺在实现上真的成立。
+                        // WithoutTransaction 的工具受写保护管辖但同样不开事务（见该标志的说明）
+                        return tool.IsReadOnly || tool.Metadata.WithoutTransaction
                             ? tool.Binding.Invoke(input, hosted)
                             : _writeScope.Run(host, scopeInfo, () => tool.Binding.Invoke(input, hosted));
                     },

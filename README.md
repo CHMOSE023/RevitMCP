@@ -5,9 +5,9 @@
 
 支持 **Revit 2019 – 2024**。架构设计见 [docs/architecture.md](docs/architecture.md)。
 
-> 当前进度：**M7 完成并已在 Revit 2019 实测通过**。
-> 房间、几何、空间查询就位——能回答"这个房间多大、里面有什么、哪两面墙打架了"。
-> 共 18 个工具：12 个只读 + 6 个写。
+> 当前进度：**M8 完成并已在 Revit 2019 实测通过**。
+> 视图、图纸、图片导出、明细表就位——能从模型交付出一套图纸和一份带截图的质检报告。
+> 共 24 个工具：15 个只读 + 9 个写。
 
 ---
 
@@ -45,7 +45,7 @@ claude mcp add --transport http revit http://127.0.0.1:7801/mcp --header "Author
 ```
 
 ```bash
-# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 107 + HTTP/MCP 端到端 54）
+# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 128 + HTTP/MCP 端到端 54）
 dotnet test RevitMCP.sln -c "Debug R24"
 ```
 
@@ -96,6 +96,9 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_get_warnings` | Revit 自己记录的模型警告，按种类归组——质检闭环的地基 |
 | `revit_list_rooms` | 房间及其面积（㎡）、周长、边界。面积为 0 直接点出"没围合" |
 | `revit_get_element_geometry` | 包围盒、定位线/点、朝向。**不返回网格** |
+| `revit_list_views` | 视图与图纸及其类型、比例、所在图纸 |
+| `revit_export_image` | 把视图或图纸导成图片落盘，返回完整路径 |
+| `revit_read_schedule` | 把明细表读成表格数据 |
 | `revit_get_selection` | 用户此刻在 Revit 里选中了什么 |
 
 **改模型**（需要用户在 Ribbon 上切到「修改模型」）
@@ -106,11 +109,27 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_create_point_based_elements` | 按插入点批量建门、窗、家具 |
 | `revit_create_surface_based_elements` | 按闭合边界批量建楼板、屋顶、天花 |
 | `revit_create_rooms` | 按点批量建房间，回执直接给出面积 |
+| `revit_create_sheets` | 批量建图纸 |
+| `revit_add_views_to_sheet` | 把视图摆到图纸上，回读实际位置并检查越界 |
+| `revit_activate_view` | 切换活动视图（改界面不改模型，见下） |
 | `revit_set_element_parameters` | 批量改同一个参数，全有全无 |
 | `revit_delete_elements` | 删除构件，先预览连带影响再确认 |
 
-`revit_set_selection` 是个例外：它不改模型（写入关闭时也能用），但会改变用户屏幕上的高亮。
-把查出来的问题构件选中交回给用户，是插件形态相对纯脚本的核心优势。
+### 工具分三类，不是两类
+
+`ReadOnly` 一个标志曾经同时管着两件事——要不要受写保护管辖、要不要开事务。
+`revit_activate_view` 把这两件事撑开了：它该受管辖（会改变其他工具的答案），
+却**不能**开事务（Revit 不允许在事务打开时切换活动视图）。
+
+| 工具改的是 | 写保护 | 事务 | 例子 |
+|---|---|---|---|
+| 模型 | 管 | 开 | 建墙、删构件、改参数 |
+| Revit 的界面状态 | 管 | 不开 | `revit_activate_view` |
+| 只是屏幕高亮 | 不管 | 不开 | `revit_set_selection` |
+
+判据是**会不会改变别人的答案**：切换活动视图会改变 `activeViewOnly` 查询和"导出当前视图"的结果，
+而选择集不会。`revit_export_image` 虽然往磁盘写文件，但不改模型也不改别的工具的答案，
+所以仍是只读——只读的质检流程恰恰最需要截图，要求先开修改模式才能截个图说不通。
 
 ### 建模工具为什么按几何形态分，而不按构件类型
 
@@ -150,6 +169,16 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 再要求带 `confirm: true` 重来。
 
 代价是删除操作做了两遍。换来的是"确认"这两个字不再是走过场。
+
+### 导出文件落在哪
+
+`revit_export_image` 是唯一会在模型之外留下痕迹的工具，**路径不由调用方决定**：
+它只收文件名，一律落在导出目录下（默认 `%LOCALAPPDATA%\RevitMCP\exports\`，
+可用配置里的 `exportDirectory` 改）。带路径分隔符、`..`、盘符、非图片扩展名的写法一律拒绝。
+
+这不是防"模型会使坏"，是防**模型被喂了坏数据**——文件名很可能来自它刚读过的某个构件名、
+某段用户输入。写坏用户的文件不可逆，而限制目录几乎不损失可用性：
+位置固定，用户和 Claude Code 都知道去哪儿找。
 
 ## 写一个新工具
 
@@ -239,6 +268,7 @@ foreach (var element in elements)
 |---|---|
 | [`m6-closed-loop.ps1`](workflows/m6-closed-loop.ps1) | 建一圈墙（故意建错一面）→ 靠警告发现 → 预览后删掉 → 复查干净 → 选中交回用户 |
 | [`m7-space.ps1`](workflows/m7-space.ps1) | 围出两间房 → 读面积与边界 → 查"房间里有什么" → 用警告与包围盒判断两面墙是否打架 |
+| [`m8-delivery.ps1`](workflows/m8-delivery.ps1) | 建图纸摆视图 → 导出 PNG → 验证路径闸 → 质检 → 写出一份带截图的 Markdown 报告 |
 | [`McpClient.ps1`](workflows/McpClient.ps1) | 连接与调用辅助：自动发现本机实例、读取令牌、走 modern era 无状态调用 |
 
 ```bash
@@ -279,6 +309,7 @@ powershell -ExecutionPolicy Bypass -File workflows/m6-closed-loop.ps1
 | `%APPDATA%\RevitMCP\config.json` | 端口、访问令牌、写入开关等 |
 | `%LOCALAPPDATA%\RevitMCP\logs\revit-<pid>.log` | 每进程一个日志文件 |
 | `%LOCALAPPDATA%\RevitMCP\instances\revit-<pid>.json` | 多实例发现：端口、活动文档、写入开关；进程退出时删除，启动时清理残留 |
+| `%LOCALAPPDATA%\RevitMCP\exports\` | `revit_export_image` 的落脚点，可用配置里的 `exportDirectory` 改 |
 
 ---
 
@@ -321,7 +352,7 @@ powershell -ExecutionPolicy Bypass -File workflows/m6-closed-loop.ps1
 | M5 | SSE 进度通知、审计日志、多实例发现完善 | ✅ 完成 |
 | M6 | 建模工具按几何形态重构（批量签名）、模型警告、删除、类型与标高发现、选择集、项目单位 | ✅ 完成 |
 | M7 | 房间、几何最小集、空间过滤、文档身份 | ✅ 完成 |
-| M8 | 视图与图纸、导出图片、明细表读取 | 规划中 |
+| M8 | 视图与图纸、导出图片、明细表读取、工具行为提示 | ✅ 完成 |
 | M9 | 多实例批处理、企业标准可执行化、外部系统对接 | 规划中 |
 
 M6 起每个阶段的验收标准都是**一条能跑通的真实工作流**，而不是工具清单打勾——

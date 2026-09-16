@@ -29,6 +29,20 @@ namespace RevitMCP.Addin.Configuration
         };
         public LogLevel LogLevel { get; set; } = LogLevel.Information;
 
+        /// <summary>
+        /// 导出文件的落脚点。留空则用 <see cref="DefaultExportDirectory"/>。
+        /// 工具只接受文件名，一律落在这个目录下——理由见 <c>ExportPaths</c>。
+        /// </summary>
+        public string ExportDirectory { get; set; }
+
+        /// <summary>导出目录的实际取值。</summary>
+        public string ResolvedExportDirectory =>
+            string.IsNullOrWhiteSpace(ExportDirectory) ? DefaultExportDirectory : ExportDirectory;
+
+        public static string DefaultExportDirectory => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RevitMCP", "exports");
+
         public static string DefaultPath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "RevitMCP", "config.json");
@@ -60,6 +74,7 @@ namespace RevitMCP.Addin.Configuration
                 config.DisabledTools = ReadStringList(root, "disabledTools", config.DisabledTools);
                 config.AllowedOrigins = ReadStringList(root, "allowedOrigins", config.AllowedOrigins);
                 config.LogLevel = ReadEnum(root, "logLevel", config.LogLevel);
+                config.ExportDirectory = ReadString(root, "exportDirectory", null);
 
                 if (string.IsNullOrEmpty(config.Token))
                 {
@@ -94,7 +109,8 @@ namespace RevitMCP.Addin.Configuration
                 .Set("defaultToolTimeoutSeconds", DefaultToolTimeoutSeconds)
                 .Set("disabledTools", ToArray(DisabledTools))
                 .Set("allowedOrigins", ToArray(AllowedOrigins))
-                .Set("logLevel", LogLevel.ToString());
+                .Set("logLevel", LogLevel.ToString())
+                .Set("exportDirectory", ExportDirectory ?? string.Empty);
 
             // 先写临时文件再替换，避免写一半崩溃留下半截文件
             var temp = path + ".tmp";

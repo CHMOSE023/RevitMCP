@@ -51,6 +51,7 @@ namespace RevitMCP.Addin.Tools
         Description = "按闭合边界批量创建楼板、屋顶或天花。坐标一律用毫米。" +
                       "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
                       "边界必须首尾相接形成闭合环；不闭合会被直接拒绝，并告诉你断在哪一段。",
+        Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class CreateSurfaceBasedTool : RevitTool<CreateSurfaceBasedInput, CreateElementsOutput>
     {

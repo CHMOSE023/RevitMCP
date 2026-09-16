@@ -148,7 +148,12 @@ namespace RevitMCP.Tooling
                 metadata.Name,
                 metadata.Title,
                 metadata.Description,
-                SchemaGenerator.Generate(binding.InputType));
+                SchemaGenerator.Generate(binding.InputType),
+                // 破坏性默认跟着"非只读"走（规范的默认值也是如此）。
+                // 个别改了模型却谈不上破坏的工具可以显式声明 Destructive = false
+                new ToolAnnotations(
+                    readOnlyHint: metadata.ReadOnly,
+                    destructiveHint: !metadata.ReadOnly && metadata.Destructive));
 
             if (_tools.ContainsKey(metadata.Name))
                 throw new InvalidOperationException("工具名重复：" + metadata.Name);

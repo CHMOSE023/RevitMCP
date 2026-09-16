@@ -49,6 +49,7 @@ namespace RevitMCP.Addin.Tools
                       "建一圈墙请一次调用传完，不要逐面调用。" +
                       "建之前先用 revit_list_types 挑类型、revit_list_levels 挑标高；" +
                       "建之后用 revit_get_warnings 复查有没有重叠。",
+        Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class CreateLineBasedTool : RevitTool<CreateLineBasedInput, CreateElementsOutput>
     {

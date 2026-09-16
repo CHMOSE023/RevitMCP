@@ -57,6 +57,7 @@ namespace RevitMCP.Addin.Tools
                       "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
                       "门窗必须依附于墙：给 hostWallId，或把插入点放在墙上让工具自己找。" +
                       "建之前先用 revit_list_types 确认对应的族已载入本项目——没载入的族无法创建。",
+        Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class CreatePointBasedTool : RevitTool<CreatePointBasedInput, CreateElementsOutput>
     {

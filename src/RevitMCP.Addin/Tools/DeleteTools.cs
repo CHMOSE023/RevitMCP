@@ -66,7 +66,8 @@ namespace RevitMCP.Addin.Tools
         public override DeleteElementsOutput Execute(
             DeleteElementsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var uiDocument = RequireUiDocument(context);
+            var document = uiDocument.Document;
 
             if (input.ElementIds == null || input.ElementIds.Count == 0)
                 throw new ToolFailureException(McpDomainError.InvalidParameter, "elementIds 不能为空。");
@@ -80,6 +81,21 @@ namespace RevitMCP.Addin.Tools
             {
                 var element = RequireElement(document, rawId);
                 if (named.Add(element.Id.GetValue())) requested.Add(element.Id);
+            }
+
+            // 活动视图删不掉，这是 Revit 的硬规矩。预检比事后诊断值钱：
+            // 真让 Document.Delete 去撞，它只回一句"其中一个或多个不能删除"，连是哪个都不说
+            var activeViewId = SafeActiveViewId(uiDocument);
+            if (activeViewId != null)
+            {
+                foreach (var id in requested)
+                {
+                    if (id != activeViewId) continue;
+
+                    throw new ToolFailureException(McpDomainError.InvalidParameter,
+                        "构件 " + id.ToProtocolString() + " 是当前活动视图，Revit 不允许删除。" +
+                        "请先用 revit_activate_view 切到别的视图，再删它。一个都没删。");
+                }
             }
 
             // 先试删一次再回滚，拿到真实的影响面。
@@ -170,9 +186,14 @@ namespace RevitMCP.Addin.Tools
                 catch (Exception ex)
                 {
                     SafeRollBack(probe);
+
+                    // Revit 的原话是"其中一个或多个不能删除"——**它不说是哪个**。
+                    // 批量删 50 个构件时这句话等于没说，模型只能整批放弃。
+                    // 逐个试一遍找出罪魁，这点开销只发生在已经失败的路径上
+                    var culprits = FindUndeletable(document, requested);
+
                     throw new ToolFailureException(McpDomainError.TransactionFailed,
-                        "Revit 拒绝删除：" + ex.Message + "。一个都没删。" +
-                        "构件可能被固定（Pin）、属于链接模型，或正被其他构件依赖。");
+                        "Revit 拒绝删除：" + ex.Message + "。一个都没删。" + Describe(culprits, requested.Count));
                 }
 
                 var affected = deleted == null
@@ -193,6 +214,50 @@ namespace RevitMCP.Addin.Tools
                 context.CancellationToken.ThrowIfCancellationRequested();
                 return affected;
             }
+        }
+
+        /// <summary>
+        /// 逐个试删，找出到底哪些删不掉。只在整批失败之后才走这条路。
+        /// 上限 50：再多就该让模型自己缩小范围了，而不是在这儿耗着。
+        /// </summary>
+        private static List<ElementId> FindUndeletable(Document document, List<ElementId> requested)
+        {
+            const int maxProbes = 50;
+            var culprits = new List<ElementId>();
+
+            foreach (var id in requested.Take(maxProbes))
+            {
+                using (var probe = new SubTransaction(document))
+                {
+                    if (probe.Start() != TransactionStatus.Started) break;
+
+                    try { document.Delete(new List<ElementId> { id }); }
+                    catch { culprits.Add(id); }
+                    finally { SafeRollBack(probe); }
+                }
+            }
+
+            return culprits;
+        }
+
+        private static string Describe(List<ElementId> culprits, int requestedCount)
+        {
+            if (culprits.Count == 0)
+                return "构件可能被固定（Pin）、属于链接模型，或正被其他构件依赖。";
+
+            var ids = string.Join("、", culprits.Take(10).Select(id => id.ToProtocolString()).ToArray());
+            var more = culprits.Count > 10 ? "（共 " + culprits.Count + " 个）" : string.Empty;
+
+            return "删不掉的是：" + ids + more +
+                   "。常见原因：它是当前活动视图、被固定（Pin）了、属于链接模型，" +
+                   "或者是模型里最后一个同类构件（Revit 不允许删光某些东西）。" +
+                   "把它们从 elementIds 里去掉，其余 " + (requestedCount - culprits.Count) + " 个就能删了。";
+        }
+
+        private static ElementId SafeActiveViewId(UIDocument uiDocument)
+        {
+            try { return uiDocument.ActiveView?.Id; }
+            catch { return null; }
         }
 
         private static void SafeRollBack(SubTransaction probe)

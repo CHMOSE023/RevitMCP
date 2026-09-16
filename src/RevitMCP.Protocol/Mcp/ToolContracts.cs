@@ -10,9 +10,41 @@ namespace RevitMCP.Protocol.Mcp
     /// 协议层看到的工具定义。刻意只依赖 JSON，不认识 Revit——
     /// M3 的工具框架负责把 [McpTool] 标注的类映射成这个结构。
     /// </summary>
+    /// <summary>
+    /// 工具的行为提示（规范里的 annotations）。
+    ///
+    /// 服务端本来就知道哪个工具只是看看、哪个会改模型、哪个会把东西删掉，
+    /// 这些信息不传出去，客户端就只能对所有工具一视同仁——
+    /// 要么全都弹确认（烦到没人看），要么全都不弹（该拦的没拦住）。
+    ///
+    /// 按规范，这些是**提示而非保证**：真正的闸门在服务端（写保护、规模阈值、删除预览），
+    /// 客户端拿它决定要不要多问一句。
+    /// </summary>
+    public sealed class ToolAnnotations
+    {
+        public ToolAnnotations(bool readOnlyHint, bool destructiveHint)
+        {
+            ReadOnlyHint = readOnlyHint;
+            DestructiveHint = destructiveHint;
+        }
+
+        /// <summary>只看不改。</summary>
+        public bool ReadOnlyHint { get; }
+
+        /// <summary>可能做出不易挽回的改动（删除尤其）。只读工具恒为 false。</summary>
+        public bool DestructiveHint { get; }
+
+        public JsonValue ToJson() =>
+            JsonValue.NewObject()
+                .Set("readOnlyHint", ReadOnlyHint)
+                .Set("destructiveHint", DestructiveHint);
+    }
+
     public sealed class ToolDefinition
     {
-        public ToolDefinition(string name, string title, string description, JsonValue inputSchema)
+        public ToolDefinition(
+            string name, string title, string description, JsonValue inputSchema,
+            ToolAnnotations annotations = null)
         {
             if (string.IsNullOrEmpty(name)) throw new ArgumentException("工具名不能为空。", nameof(name));
             Name = name;
@@ -22,12 +54,14 @@ namespace RevitMCP.Protocol.Mcp
             InputSchema = inputSchema ?? JsonValue.NewObject()
                 .Set("type", "object")
                 .Set("additionalProperties", false);
+            Annotations = annotations ?? new ToolAnnotations(false, false);
         }
 
         public string Name { get; }
         public string Title { get; }
         public string Description { get; }
         public JsonValue InputSchema { get; }
+        public ToolAnnotations Annotations { get; }
 
         public JsonValue ToJson()
         {
@@ -35,6 +69,7 @@ namespace RevitMCP.Protocol.Mcp
             if (!string.IsNullOrEmpty(Title)) json.Set("title", Title);
             if (!string.IsNullOrEmpty(Description)) json.Set("description", Description);
             json.Set("inputSchema", InputSchema);
+            json.Set("annotations", Annotations.ToJson());
             return json;
         }
     }

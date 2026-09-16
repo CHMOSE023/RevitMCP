@@ -116,6 +116,20 @@ namespace RevitMCP.Addin.Tools
         }
 
         /// <summary>
+        /// 导出文件的根目录。工具只接受文件名，落点由服务决定——理由见 <see cref="RevitMCP.Tooling.ExportPaths"/>。
+        /// </summary>
+        protected static string ExportRoot()
+        {
+            var root = App.Current?.Config?.ResolvedExportDirectory;
+
+            if (string.IsNullOrWhiteSpace(root))
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "插件未正确初始化，导出目录不可用。请查看 RevitMCP 日志。");
+
+            return root;
+        }
+
+        /// <summary>
         /// 批量工具的开场白：入参非空 + 过一遍规模闸。
         /// 三个建模工具的这两步必须完全一致，抄三遍迟早抄岔。
         /// </summary>

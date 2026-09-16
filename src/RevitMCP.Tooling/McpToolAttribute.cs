@@ -29,6 +29,24 @@ namespace RevitMCP.Tooling
         /// <summary>只读工具在写保护开启时仍可调用；非只读工具会被拒绝并返回 WRITE_DISABLED。</summary>
         public bool ReadOnly { get; set; }
 
+        /// <summary>
+        /// 非只读工具默认跑在事务里。个别工具改的不是模型、而是 Revit 的界面状态
+        /// （切换活动视图就是），它们要受写保护管辖，却**不能**开事务——
+        /// Revit 不允许在事务打开的状态下切换活动视图。
+        ///
+        /// 这个开关把"要不要写保护"和"要不要事务"拆开。在它出现之前，
+        /// <see cref="ReadOnly"/> 一个标志承担了两件不同的事，
+        /// 于是"受管辖但无事务"这一类工具根本没法表达。
+        /// </summary>
+        public bool WithoutTransaction { get; set; }
+
+        /// <summary>
+        /// 是否可能做出不易挽回的改动。只对非只读工具有意义，默认 true。
+        /// 纯粹新增东西的工具（创建图纸、创建房间）可以置 false——
+        /// 它们改了模型，但撤销一步就没了，和删除不是一个量级。
+        /// </summary>
+        public bool Destructive { get; set; } = true;
+
         /// <summary>单次调用超时。0 表示使用配置中的默认值。</summary>
         public int TimeoutSeconds { get; set; }
     }
