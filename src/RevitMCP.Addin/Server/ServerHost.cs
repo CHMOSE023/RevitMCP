@@ -165,10 +165,36 @@ namespace RevitMCP.Addin.Server
             Log.Info("写入模式：" + (enabled ? "已开启" : "已关闭"));
         }
 
-        /// <summary>供「复制接入命令」按钮使用。</summary>
+        /// <summary>本机端点。任何 MCP over HTTP 客户端都连这个地址。</summary>
+        public string Endpoint => "http://127.0.0.1:" + Port + "/mcp";
+
+        /// <summary>访问令牌，放进 Authorization 头。</summary>
+        public string Token => _config.Token;
+
+        /// <summary>Claude Code 的一行接入命令，可直接粘进终端执行。</summary>
         public string BuildConnectCommand() =>
-            "claude mcp add --transport http revit http://127.0.0.1:" + Port + "/mcp" +
+            "claude mcp add --transport http revit " + Endpoint +
             " --header \"Authorization: Bearer " + _config.Token + "\"";
+
+        /// <summary>
+        /// 通用 MCP 客户端的配置块。
+        ///
+        /// Claude Code 用 CLI 命令接入，Claude Desktop、Cline、Continue 之类
+        /// 则一律读这种 <c>mcpServers</c> 配置。本服务是标准 MCP over HTTP，
+        /// 只备一种接入方式等于把自己窄化成某一家的插件。
+        ///
+        /// 两种形式都必须是**粘贴即可用**的。给一段既不能执行、又不合任何配置格式的
+        /// 半成品文本，用户还得自己拼，那还不如只给端点和令牌。
+        /// </summary>
+        public string BuildJsonConfig() =>
+            JsonValue.NewObject()
+                .Set("mcpServers", JsonValue.NewObject()
+                    .Set("revit", JsonValue.NewObject()
+                        .Set("type", "http")
+                        .Set("url", Endpoint)
+                        .Set("headers", JsonValue.NewObject()
+                            .Set("Authorization", "Bearer " + _config.Token))))
+                .ToJson(indented: true);
 
         /// <summary>
         /// 扫描本程序集中所有 [McpTool] 并组装执行管线。

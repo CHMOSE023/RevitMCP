@@ -5,8 +5,9 @@
 
 支持 **Revit 2019 – 2024**。架构设计见 [docs/architecture.md](docs/architecture.md)。
 
-> 当前进度：**M5 完成**。SSE 进度通知、工具调用审计、多实例发现都已就位。
-> 4 个只读工具 + 2 个写工具可用。
+> 当前进度：**M6 完成并已在 Revit 2019 实测通过**。建模工具已按几何形态重构成批量签名，
+> 模型警告、删除、类型与标高发现、选择集就位——
+> 建错了模型自己能发现、自己能收场。共 15 个工具：10 个只读 + 5 个写。
 
 ---
 
@@ -22,14 +23,29 @@ powershell -ExecutionPolicy Bypass -File build/install.ps1 -RevitYear 2024
 
 启动 Revit，功能区应出现 **RevitMCP** 选项卡。
 
-接入 Claude Code（端口与令牌见 Revit 面板上的「复制接入命令」按钮）：
+接入 Claude Code（端口与令牌见 Revit 面板上「接入信息 → Claude Code 命令」）：
 
 ```bash
 claude mcp add --transport http revit http://127.0.0.1:7801/mcp --header "Authorization: Bearer <token>"
 ```
 
+本服务是标准 **MCP over HTTP**，不限于某一种客户端。读 `mcpServers` 配置的客户端
+（Claude Desktop、Cline、Continue 等）用「接入信息 → JSON 配置」，复制到自己的配置里即可：
+
+```json
+{
+  "mcpServers": {
+    "revit": {
+      "type": "http",
+      "url": "http://127.0.0.1:7801/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
 ```bash
-# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 87 + HTTP/MCP 端到端 54）
+# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 98 + HTTP/MCP 端到端 54）
 dotnet test RevitMCP.sln -c "Debug R24"
 ```
 
@@ -66,20 +82,51 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 
 ## 现有工具
 
+**查看模型**
+
 | 工具 | 作用 |
 |---|---|
 | `revit_get_document_info` | 当前文档标题、路径、活动视图、写入模式是否开启 |
+| `revit_get_project_units` | 项目的长度/面积/体积显示单位，以及它与工具单位是否一致 |
 | `revit_list_categories` | 模型中实际存在构件的类别及数量（查询前先用它确认类别名）|
+| `revit_list_types` | 按类别列出族类型及其 ID、厚度、使用数量——建模前靠它挑规格 |
+| `revit_list_levels` | 标高的 ID、名称、高程，建模时的 `levelId` 从这里来 |
 | `revit_query_elements` | 按类别查构件，返回 ID / 名称 / 类型 / 标高 |
 | `revit_get_element_parameters` | 批量读参数，同时给出原始值与带单位的显示值 |
-| `revit_set_element_parameters` | 批量改同一个参数，全有全无（写）|
-| `revit_create_wall` | 按起止点建一面直墙，坐标用毫米（写）|
+| `revit_get_warnings` | Revit 自己记录的模型警告，按种类归组——质检闭环的地基 |
+| `revit_get_selection` | 用户此刻在 Revit 里选中了什么 |
 
-前四个只读，写保护关闭时也能用；后两个会改模型，需要用户在 Ribbon 上开启写入。
+**改模型**（需要用户在 Ribbon 上切到「修改模型」）
+
+| 工具 | 作用 |
+|---|---|
+| `revit_create_line_based_elements` | 按定位线批量建墙、梁 |
+| `revit_create_point_based_elements` | 按插入点批量建门、窗、家具 |
+| `revit_create_surface_based_elements` | 按闭合边界批量建楼板、屋顶、天花 |
+| `revit_set_element_parameters` | 批量改同一个参数，全有全无 |
+| `revit_delete_elements` | 删除构件，先预览连带影响再确认 |
+
+`revit_set_selection` 是个例外：它不改模型（写入关闭时也能用），但会改变用户屏幕上的高亮。
+把查出来的问题构件选中交回给用户，是插件形态相对纯脚本的核心优势。
+
+### 建模工具为什么按几何形态分，而不按构件类型
+
+三个 `create` 工具覆盖绝大部分建模需求，具体建什么由 `category` + `typeId` 决定。
+按构件类型一个个加工具的话，门、窗、梁、板各写一遍参数校验、单位换算、默认值回填、
+错误信息——而它们之间真正的差异只有"调哪个 Revit API"这一行。
+
+**签名一律收数组。** 建一圈墙请一次调用传完：一次调用 = 一个事务 = 撤销栈一步。
+逐面调用建 11 面墙，用户要按 11 次 Ctrl+Z。
+
+**尺寸由类型决定，不在实例上改。** 参数里没有 `thickness` / `width` 这类字段——
+要 200 厚的墙，用 `revit_list_types` 按 `thicknessMm` 挑类型。
+按尺寸动态建类型会污染项目的类型库，那是用户的资产，不该由模型随手增删。
+传了不存在的字段会当场报错并列出可用参数，不会被静默忽略。
 
 ### 写工具的三条保证
 
 - **一个调用 = 一个事务 = 撤销栈里的一步**，命名 `MCP: <工具名>`，用户看得懂也能单步撤销。
+  批量建 200 面墙同样只是一步。
 - **失败必回滚**，模型回到调用前的样子。工具自己抛的失败和没人预料到的异常一视同仁。
 - **被吞掉的警告一定说出来**。事务里的 Revit 警告会被自动忽略（否则弹出的模态框会把
   Revit 和服务一起卡死），但每一条都会出现在返回结果的 `warnings` 字段里。
@@ -88,6 +135,18 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 影响构件数超过 `maxElementsPerWrite`（默认 500）时返回 `CONFIRMATION_REQUIRED`，
 要模型带 `confirm: true` 重来。这道闸防的不是"想改 600 个"，而是"以为在改 6 个、
 实际匹配到 600 个"。
+
+### 删除为什么总要确认两次
+
+删一面墙，墙上的门窗会跟着没——**连带删除**是删除工具最容易伤人的地方，
+而 Revit 没有提供任何预演接口，依附关系（墙→门窗→标记）也无法靠遍历可靠推断。
+
+`revit_delete_elements` 的办法是：在 `SubTransaction` 里真删一次，
+记下 Revit 报告的完整影响面，然后回滚。子事务的回滚不进撤销栈，对用户完全不可见。
+第一次调用因此能给出一份**真实的**清单——包括你没点名、但会被连带删掉的那些——
+再要求带 `confirm: true` 重来。
+
+代价是删除操作做了两遍。换来的是"确认"这两个字不再是走过场。
 
 ## 写一个新工具
 
@@ -152,7 +211,8 @@ foreach (var element in elements)
 
 ```
 2026-09-16 11:42:03.117 [AUDIT] revit_set_element_parameters [写] 成功 · 214ms · 影响 3 个构件 · 1 条警告 · elementIds=["198749","234869",…共 3 项], parameterName="注释"
-2026-09-16 11:42:31.882 [AUDIT] revit_create_wall [写] 被拒/WRITE_DISABLED · 0ms · startX=0, startY=0, endX=6000, endY=0
+2026-09-16 11:42:31.882 [AUDIT] revit_create_line_based_elements [写] 被拒/WRITE_DISABLED · 0ms · elements=[5 项]
+2026-09-16 11:43:07.402 [AUDIT] revit_delete_elements [写] 失败/CONFIRMATION_REQUIRED · 88ms · elementIds=["234871"]
 ```
 
 审计要回答的是"模型到底被动过什么"，所以：
@@ -162,6 +222,29 @@ foreach (var element in elements)
   事后翻日志时这两者绝不能混为一谈。
 - **入参只记摘要。** 500 个 ID 原样写进日志等于没写。
 - **绕过 `logLevel`。** 把日志级别调高不该让审计悄悄消失，那恰恰是最需要它的时候。
+
+## 工作流脚本
+
+`workflows/` 下是把里程碑的验收标准固化成的可执行脚本。它们同时是回归测试和演示素材——
+工具清单打勾很容易，能不能干完一件活是另一回事。
+
+| 脚本 | 内容 |
+|---|---|
+| [`m6-closed-loop.ps1`](workflows/m6-closed-loop.ps1) | 建一圈墙（故意建错一面）→ 靠警告发现 → 预览后删掉 → 复查干净 → 选中交回用户 |
+| [`McpClient.ps1`](workflows/McpClient.ps1) | 连接与调用辅助：自动发现本机实例、读取令牌、走 modern era 无状态调用 |
+
+```bash
+# 需要 Revit 正在运行、RevitMCP 服务已启动、操作模式已切到「修改模型」
+powershell -ExecutionPolicy Bypass -File workflows/m6-closed-loop.ps1
+```
+
+脚本默认在 (50000, 50000) 附近作业并在结束时清理干净，可以反复运行；
+加 `-KeepWalls` 可以保留结果去 Revit 里亲眼看。
+
+> **写 PowerShell 客户端的人一定会踩的坑**：`ConvertTo-Json` 默认只展开 2 层，
+> 而建模工具的入参是 `elements[].locationLine.p0.x`。用默认深度会把嵌套对象
+> 序列化成 `"System.Collections.Hashtable"` 这种字符串，**而且不报错**。
+> 一律带 `-Depth 10`。
 
 ## 协议支持
 
@@ -193,7 +276,8 @@ foreach (var element in elements)
 
 ## 开发注意
 
-- **Ribbon 上的「写入」默认关闭。** 关闭时所有写工具返回 `WRITE_DISABLED`，只有只读工具可用。
+- **Ribbon 上的操作模式默认是「浏览模型」。** 此时所有写工具返回 `WRITE_DISABLED`，只有只读工具可用；
+  要让模型能改，用户得手动切到「修改模型」。
 - **`.ps1` 脚本必须存为 UTF-8 with BOM。** Windows PowerShell 5.1 会把无 BOM 的脚本按系统 ANSI 码页读取，
   中文会变成乱码并导致语法错误。
 - **Revit API 差异只允许出现在 `src/RevitMCP.Addin/Compat/`。** 其他地方一律走那里的兼容方法，
@@ -202,6 +286,13 @@ foreach (var element in elements)
   `Document` 轻则抛异常、重则崩 Revit。
 - **写工具里不要自己 `new Transaction`。** 管线已经开好了，再开一个会直接抛异常。
   需要多步且要对外表现为一步撤销时，用 `SubTransaction`。
+- **Revit API 的 `out` 引用类型参数，一律先 `new` 一个再传。** 例如
+  `NewFootPrintRoof(..., out ModelCurveArray mapping)`：不先 `new` 就抛
+  `ArgumentNullException`，而且消息只有一句 "Value cannot be null."，不说是哪个参数。
+  原因是 Revit API 是 C++/CLI 包装，`&` 参数实际是 tracking reference，
+  被调用方先读传入的句柄再赋值。SDK 示例全都这么写，只是从不说为什么。
+- **几何能表达的就别用参数表达。** 梁的「标高偏移」在常见族上是 Revit 算出来的、只读，
+  写进去会静默失败；把高度做进定位线里就没有这个问题。参数可能只读，几何不会。
 - **`DialogBoxShowing` 的解绑必须走 `try/finally`。** 漏解绑的后果不是这次调用出错，
   而是此后用户自己操作 Revit 时的正常对话框也被悄悄吃掉——那会被当成"Revit 坏了"。
 - **`REVIT_BUSY` 和 `TIMEOUT` 不是一回事**，不要合并：前者保证模型没被碰过，后者意味着操作已经
@@ -220,3 +311,15 @@ foreach (var element in elements)
 | M3 | `[McpTool]` 注册、Schema 生成、执行管线 + 4 个只读工具 | ✅ 完成 |
 | M4 | 事务管线、失败预处理、对话框拦截、写保护、规模阈值 + 2 个写工具 | ✅ 完成 |
 | M5 | SSE 进度通知、审计日志、多实例发现完善 | ✅ 完成 |
+| M6 | 建模工具按几何形态重构（批量签名）、模型警告、删除、类型与标高发现、选择集、项目单位 | ✅ 完成 |
+| M7 | 房间、几何最小集、空间过滤 | 规划中 |
+| M8 | 视图与图纸、导出图片、明细表读取 | 规划中 |
+| M9 | 多实例批处理、企业标准可执行化、外部系统对接 | 规划中 |
+
+M6 起每个阶段的验收标准都是**一条能跑通的真实工作流**，而不是工具清单打勾——
+M6 是"建错 → 自己发现 → 自己删掉 → 重建，全程不用人按 Ctrl+Z"。
+那条工作流固化在 [workflows/m6-closed-loop.ps1](workflows/m6-closed-loop.ps1)，
+它同时是回归测试和演示素材。
+
+详细路线、参数设计与外部方案对照见
+[docs/architecture.md §13](docs/architecture.md)。

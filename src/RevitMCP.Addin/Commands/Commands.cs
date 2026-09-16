@@ -94,25 +94,56 @@ namespace RevitMCP.Addin.Commands
     {
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
-            return CommandHelper.Guard("复制接入命令", () =>
+            return CommandHelper.Guard("复制 CLI 命令", () =>
+                CopyHelper.Copy(
+                    build: server => server.BuildConnectCommand(),
+                    title: "CLI 命令已复制到剪贴板",
+                    hint: "在终端中执行即可把本 Revit 实例接入 Claude Code。"),
+                ref message);
+        }
+    }
+
+    /// <summary>
+    /// 复制通用 MCP 客户端的 JSON 配置。
+    /// 本服务是标准 MCP over HTTP，不是某一家客户端的专属插件——
+    /// 除了 Claude Code 的 CLI，还得给读 mcpServers 配置的那一大类客户端一条路。
+    /// </summary>
+    [Transaction(TransactionMode.Manual)]
+    public class CopyJsonConfigCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            return CommandHelper.Guard("复制 JSON 配置", () =>
+                CopyHelper.Copy(
+                    build: server => server.BuildJsonConfig(),
+                    title: "JSON 配置已复制到剪贴板",
+                    hint: "粘贴到客户端的 MCP 配置里即可（Claude Desktop、Cline、Continue 等都读这种格式）。"),
+                ref message);
+        }
+    }
+
+    /// <summary>
+    /// 复制类命令的共同部分：服务没起来就别复制——
+    /// 复制出去的端点连不上，用户会以为是客户端配错了，排查方向全错。
+    /// </summary>
+    internal static class CopyHelper
+    {
+        public static Result Copy(Func<Server.ServerHost, string> build, string title, string hint)
+        {
+            var app = App.Current;
+            if (app == null) return Result.Failed;
+
+            if (!app.Server.IsRunning)
             {
-                var app = App.Current;
-                if (app == null) return Result.Failed;
+                TaskDialog.Show("RevitMCP", "服务尚未启动，请先启动服务再复制接入信息。");
+                return Result.Cancelled;
+            }
 
-                if (!app.Server.IsRunning)
-                {
-                    TaskDialog.Show("RevitMCP", "服务尚未启动，请先点击「启动服务」。");
-                    return Result.Cancelled;
-                }
+            var text = build(app.Server);
+            System.Windows.Clipboard.SetText(text);
 
-                var command = app.Server.BuildConnectCommand();
-                System.Windows.Clipboard.SetText(command);
-
-                TaskDialog.Show("RevitMCP",
-                    "接入命令已复制到剪贴板：\n\n" + command +
-                    "\n\n在终端中执行即可把本 Revit 实例接入 Claude Code。");
-                return Result.Succeeded;
-            }, ref message);
+            TaskDialog.Show("RevitMCP", title + "：\n\n" + text + "\n\n" + hint);
+            return Result.Succeeded;
         }
     }
 

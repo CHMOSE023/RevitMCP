@@ -103,7 +103,8 @@ namespace RevitMCP.Addin.Tools
         /// 实际匹配到 600 个"——后者才是真正会毁掉模型的那种错误。
         /// </summary>
         protected static void GuardScale(
-            int affected, bool? confirm, ToolExecutionContext<UIApplication> context, string action)
+            int affected, bool? confirm, ToolExecutionContext<UIApplication> context, string action,
+            string remedy = null)
         {
             var limit = context.MaxElementsPerWrite;
             if (limit <= 0 || affected <= limit || confirm == true) return;
@@ -111,7 +112,24 @@ namespace RevitMCP.Addin.Tools
             throw new ToolFailureException(McpDomainError.ConfirmationRequired,
                 "本次操作将" + action + " " + affected + " 个构件，超过单次上限 " + limit + " 个。" +
                 "确认这正是你想要的范围后，带上 confirm: true 重新调用；" +
-                "否则请收紧筛选条件（例如缩小类别范围或加上 nameContains）。");
+                (remedy ?? "否则请收紧筛选条件（例如缩小类别范围或加上 nameContains）。"));
+        }
+
+        /// <summary>
+        /// 批量工具的开场白：入参非空 + 过一遍规模闸。
+        /// 三个建模工具的这两步必须完全一致，抄三遍迟早抄岔。
+        /// </summary>
+        protected static void RequireBatch<T>(
+            List<T> elements, bool? confirm, ToolExecutionContext<UIApplication> context, string action)
+        {
+            if (elements == null || elements.Count == 0)
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "elements 不能为空，至少要给一项。");
+
+            // 批量创建没有"筛选条件"可收紧——那句默认建议是给按条件匹配的工具写的，
+            // 照搬过来就是让模型去做一件做不到的事。能做的只有分批
+            GuardScale(elements.Count, confirm, context, action,
+                "否则请分批调用，每批不超过 " + context.MaxElementsPerWrite + " 个。");
         }
 
         /// <summary>
