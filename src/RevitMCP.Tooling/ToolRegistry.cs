@@ -16,18 +16,26 @@ namespace RevitMCP.Tooling
     public sealed class ToolExecutionContext<TContext>
     {
         public ToolExecutionContext(TContext host, bool writeEnabled, int maxElementsPerWrite,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, IList<string> warnings = null)
         {
             Host = host;
             WriteEnabled = writeEnabled;
             MaxElementsPerWrite = maxElementsPerWrite;
             CancellationToken = cancellationToken;
+            Warnings = warnings ?? new List<string>();
         }
 
         public TContext Host { get; }
         public bool WriteEnabled { get; }
         public int MaxElementsPerWrite { get; }
         public CancellationToken CancellationToken { get; }
+
+        /// <summary>
+        /// 执行期间被抑制的 Revit 警告，以及工具自己想让模型看见的提示。
+        /// 管线会把非空的它作为 warnings 字段并入工具输出——
+        /// 工具作者往里 Add 即可，不必在自己的 Output DTO 里另开一个字段。
+        /// </summary>
+        public IList<string> Warnings { get; }
     }
 
     /// <summary>注册表看到的工具形态（已擦除泛型）。工具作者不直接实现它。</summary>

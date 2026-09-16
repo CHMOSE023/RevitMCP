@@ -8,6 +8,7 @@ using RevitMCP.Addin.Compat;
 using RevitMCP.Addin.Configuration;
 using RevitMCP.Addin.Diagnostics;
 using RevitMCP.Addin.Dispatcher;
+using RevitMCP.Addin.Execution;
 using Autodesk.Revit.UI;
 using RevitMCP.Addin.Tools;
 using RevitMCP.Protocol.Json;
@@ -23,8 +24,8 @@ namespace RevitMCP.Addin.Server
     /// <summary>
     /// 服务生命周期：装配 MCP 服务 + HTTP 传输，并维护实例发现文件。
     ///
-    /// M3 现状：工具由 [McpTool] 反射注册，只读工具已可用；
-    /// 写工具的事务管线在 M4。
+    /// M4 现状：工具由 [McpTool] 反射注册；非只读工具经 <see cref="RevitWriteScope"/>
+    /// 跑在独立事务里，失败预处理与对话框拦截都由它装配。
     /// </summary>
     public sealed class ServerHost
     {
@@ -170,7 +171,9 @@ namespace RevitMCP.Addin.Server
                 MaxElementsPerWrite = () => _config.MaxElementsPerWrite,
                 DefaultTimeoutSeconds = () => _config.DefaultToolTimeoutSeconds,
                 Log = LogFrom
-            });
+            },
+            // 写作用域只作用于非只读工具：开事务、装失败预处理、拦模态框（M4）
+            new RevitWriteScope());
         }
 
         private string BuildInstructions() =>

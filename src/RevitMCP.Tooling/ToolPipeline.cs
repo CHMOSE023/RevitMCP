@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -42,15 +43,18 @@ namespace RevitMCP.Tooling
         private readonly ToolRegistry<TContext> _registry;
         private readonly IWorkDispatcher<TContext> _dispatcher;
         private readonly ToolPipelineOptions _options;
+        private readonly IWriteScope<TContext> _writeScope;
 
         public ToolPipeline(
             ToolRegistry<TContext> registry,
             IWorkDispatcher<TContext> dispatcher,
-            ToolPipelineOptions options = null)
+            ToolPipelineOptions options = null,
+            IWriteScope<TContext> writeScope = null)
         {
             _registry = registry ?? throw new ArgumentNullException(nameof(registry));
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _options = options ?? new ToolPipelineOptions();
+            _writeScope = writeScope ?? new PassthroughWriteScope<TContext>();
         }
 
         public IReadOnlyList<ToolDefinition> ListTools() => _registry.Definitions;
@@ -85,17 +89,32 @@ namespace RevitMCP.Tooling
                     ? tool.Metadata.TimeoutSeconds
                     : Invoke(_options.DefaultTimeoutSeconds, 60)));
 
+            // 警告在主线程上被写入、在 HTTP 线程上被读取，中间隔着一次 await——
+            // 用并发集合而非 List，省掉一个只在"事务刚好产生警告"时才现形的竞态
+            var warnings = new ConcurrentQueue<string>();
             var context = new ToolExecutionContext<TContext>(
-                default(TContext), writeEnabled, Invoke(_options.MaxElementsPerWrite, 500), cancellationToken);
+                default(TContext), writeEnabled, Invoke(_options.MaxElementsPerWrite, 500),
+                cancellationToken, new ConcurrentQueueAdapter(warnings));
 
             try
             {
+                var scopeInfo = new WriteScopeInfo(name, new ConcurrentQueueAdapter(warnings));
+
                 var output = await _dispatcher.InvokeAsync(
-                    host => tool.Binding.Invoke(input, WithHost(context, host)),
+                    host =>
+                    {
+                        var hosted = WithHost(context, host);
+
+                        // 只读工具不开事务：既省一次 Revit 事务开销，
+                        // 也保证"只读"这个承诺在实现上真的成立
+                        return tool.IsReadOnly
+                            ? tool.Binding.Invoke(input, hosted)
+                            : _writeScope.Run(host, scopeInfo, () => tool.Binding.Invoke(input, hosted));
+                    },
                     timeout,
                     cancellationToken).ConfigureAwait(false);
 
-                var payload = JsonMapper.ToJson(output);
+                var payload = AttachWarnings(JsonMapper.ToJson(output), warnings);
 
                 // 规范建议：返回 structuredContent 的同时，也把序列化后的 JSON 放进文本块
                 return ToolCallResult.Ok(payload.ToJson(indented: true), payload);
@@ -137,7 +156,49 @@ namespace RevitMCP.Tooling
 
         private static ToolExecutionContext<TContext> WithHost(ToolExecutionContext<TContext> template, TContext host) =>
             new ToolExecutionContext<TContext>(
-                host, template.WriteEnabled, template.MaxElementsPerWrite, template.CancellationToken);
+                host, template.WriteEnabled, template.MaxElementsPerWrite, template.CancellationToken,
+                template.Warnings);
+
+        /// <summary>
+        /// 把被抑制的警告并入工具输出。
+        /// 工具失败时不走这里——失败文本本身已经说明了原因，再挂一串警告只会喧宾夺主。
+        /// </summary>
+        private static JsonValue AttachWarnings(JsonValue payload, ConcurrentQueue<string> warnings)
+        {
+            if (warnings.Count == 0 || payload == null || !payload.IsObject) return payload;
+
+            var array = JsonValue.NewArray();
+            foreach (var warning in warnings) array.Add(JsonValue.String(warning));
+            return payload.Set("warnings", array);
+        }
+
+        /// <summary>把 ConcurrentQueue 装成 IList 的只进不出视图：工具只会往里 Add。</summary>
+        private sealed class ConcurrentQueueAdapter : IList<string>
+        {
+            private readonly ConcurrentQueue<string> _queue;
+
+            public ConcurrentQueueAdapter(ConcurrentQueue<string> queue) => _queue = queue;
+
+            public void Add(string item) { if (!string.IsNullOrWhiteSpace(item)) _queue.Enqueue(item); }
+            public int Count => _queue.Count;
+            public bool IsReadOnly => false;
+            public IEnumerator<string> GetEnumerator() => _queue.GetEnumerator();
+            System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+            public bool Contains(string item) => System.Linq.Enumerable.Contains(_queue, item);
+            public void CopyTo(string[] array, int arrayIndex) => _queue.CopyTo(array, arrayIndex);
+            public int IndexOf(string item) => throw new NotSupportedException();
+
+            // 以下都不该被调用：警告只应追加，删改历史等于抹掉证据
+            public string this[int index]
+            {
+                get => System.Linq.Enumerable.ElementAt(_queue, index);
+                set => throw new NotSupportedException();
+            }
+            public void Clear() => throw new NotSupportedException();
+            public void Insert(int index, string item) => throw new NotSupportedException();
+            public bool Remove(string item) => throw new NotSupportedException();
+            public void RemoveAt(int index) => throw new NotSupportedException();
+        }
 
         private static ToolCallResult Failure(string code, string message) =>
             ToolCallResult.Failure(code == null ? message : McpDomainError.Format(code, message));

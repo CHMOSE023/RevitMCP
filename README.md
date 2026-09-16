@@ -5,8 +5,8 @@
 
 支持 **Revit 2019 – 2024**。架构设计见 [docs/architecture.md](docs/architecture.md)。
 
-> 当前进度：**M3 完成**。工具框架（`[McpTool]` 反射注册 + JSON Schema 自动生成 + 执行管线）
-> 已就位，4 个只读工具可用。写工具的事务管线在 M4。
+> 当前进度：**M4 完成**。写入管线已就位——每个写工具跑在独立事务里，
+> 配两道防模态框的防线，失败必回滚。4 个只读工具 + 2 个写工具可用。
 
 ---
 
@@ -29,7 +29,7 @@ claude mcp add --transport http revit http://127.0.0.1:7801/mcp --header "Author
 ```
 
 ```bash
-# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 58 + HTTP/MCP 端到端 42）
+# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 71 + HTTP/MCP 端到端 42）
 dotnet test RevitMCP.sln -c "Debug R24"
 ```
 
@@ -72,10 +72,26 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_list_categories` | 模型中实际存在构件的类别及数量（查询前先用它确认类别名）|
 | `revit_query_elements` | 按类别查构件，返回 ID / 名称 / 类型 / 标高 |
 | `revit_get_element_parameters` | 批量读参数，同时给出原始值与带单位的显示值 |
+| `revit_set_element_parameters` | 批量改同一个参数，全有全无（写）|
+| `revit_create_wall` | 按起止点建一面直墙，坐标用毫米（写）|
 
-全部只读。写工具在 M4。
+前四个只读，写保护关闭时也能用；后两个会改模型，需要用户在 Ribbon 上开启写入。
+
+### 写工具的三条保证
+
+- **一个调用 = 一个事务 = 撤销栈里的一步**，命名 `MCP: <工具名>`，用户看得懂也能单步撤销。
+- **失败必回滚**，模型回到调用前的样子。工具自己抛的失败和没人预料到的异常一视同仁。
+- **被吞掉的警告一定说出来**。事务里的 Revit 警告会被自动忽略（否则弹出的模态框会把
+  Revit 和服务一起卡死），但每一条都会出现在返回结果的 `warnings` 字段里。
+  静默吞警告比弹框更危险——模型和用户都不会知道刚才发生过什么。
+
+影响构件数超过 `maxElementsPerWrite`（默认 500）时返回 `CONFIRMATION_REQUIRED`，
+要模型带 `confirm: true` 重来。这道闸防的不是"想改 600 个"，而是"以为在改 6 个、
+实际匹配到 600 个"。
 
 ## 写一个新工具
+
+`ReadOnly = true` 的工具直接执行；去掉它就是写工具，管线会自动套上事务与两道防线。
 
 ```csharp
 [McpTool("revit_do_something", Title = "做点什么", Description = "给模型看的说明。", ReadOnly = true)]
@@ -98,8 +114,12 @@ public sealed class DoSomethingInput
 }
 ```
 
-就这些。线程编组、参数绑定与校验、Schema 生成、超时、序列化、错误映射全由管线处理，
-`OnStartup` 时自动扫描注册。失败时抛 `ToolFailureException(McpDomainError.XXX, "原因")`。
+就这些。线程编组、事务、参数绑定与校验、Schema 生成、超时、序列化、错误映射全由管线处理，
+`OnStartup` 时自动扫描注册。失败时抛 `ToolFailureException(McpDomainError.XXX, "原因")`——
+写工具抛出时事务会回滚，不必自己收拾。
+
+想让模型看见某个提示（比如"你没指定标高，我用了标高 1"），
+往 `context.Warnings` 里 `Add` 一句即可，管线会并进输出的 `warnings` 字段。
 
 前三个项目刻意不依赖 Revit API，这不只是洁癖：**整条 HTTP + MCP 通路能在没装 Revit 的机器上
 端到端测试**，CI 因此能覆盖大部分逻辑。
@@ -141,6 +161,10 @@ public sealed class DoSomethingInput
   例如 `ElementId` 在 2024 起由 Int32 变为 Int64。
 - **一切 Revit API 调用必须经 `RevitDispatcher.InvokeAsync` 编组到主线程。** 从 HTTP 线程直接碰
   `Document` 轻则抛异常、重则崩 Revit。
+- **写工具里不要自己 `new Transaction`。** 管线已经开好了，再开一个会直接抛异常。
+  需要多步且要对外表现为一步撤销时，用 `SubTransaction`。
+- **`DialogBoxShowing` 的解绑必须走 `try/finally`。** 漏解绑的后果不是这次调用出错，
+  而是此后用户自己操作 Revit 时的正常对话框也被悄悄吃掉——那会被当成"Revit 坏了"。
 - **`REVIT_BUSY` 和 `TIMEOUT` 不是一回事**，不要合并：前者保证模型没被碰过，后者意味着操作已经
   跑起来、模型可能已变。模型会据此决定要不要重试。
 - 安装前必须关闭 Revit，否则 DLL 被占用。`install.ps1` 会主动检查并拒绝。
@@ -155,5 +179,5 @@ public sealed class DoSomethingInput
 | M1 | TcpListener HTTP + JSON-RPC + dual-era 握手 + Origin/Bearer 校验 | ✅ 完成 |
 | M2 | `DispatchQueue` + `RevitDispatcher` 线程编组、双重超时语义、首个工具 | ✅ 完成 |
 | M3 | `[McpTool]` 注册、Schema 生成、执行管线 + 4 个只读工具 | ✅ 完成 |
-| M4 | 事务管线、失败预处理、对话框拦截、写保护 | 待开始 |
+| M4 | 事务管线、失败预处理、对话框拦截、写保护、规模阈值 + 2 个写工具 | ✅ 完成 |
 | M5 | SSE 进度通知、审计日志、多实例发现完善 | 待开始 |

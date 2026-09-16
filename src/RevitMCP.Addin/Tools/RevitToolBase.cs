@@ -78,6 +78,43 @@ namespace RevitMCP.Addin.Tools
         }
 
         /// <summary>
+        /// 按 ID 取构件。取不到就抛 ELEMENT_NOT_FOUND——
+        /// 写工具不该"跳过找不到的那个然后照样改剩下的"：
+        /// 模型以为改了 5 个，实际只改了 4 个，这种偏差会一直传下去。
+        /// </summary>
+        protected static Element RequireElement(Document document, string rawId)
+        {
+            if (!ElementIdCompat.TryParse(rawId, out var elementId))
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "构件 ID \"" + rawId + "\" 格式非法，应为十进制整数的字符串形式。");
+
+            var element = document.GetElement(elementId);
+            if (element == null)
+                throw new ToolFailureException(McpDomainError.ElementNotFound,
+                    "模型中不存在 ID 为 " + rawId + " 的构件。请先用 revit_query_elements 确认 ID。");
+
+            return element;
+        }
+
+        /// <summary>
+        /// 规模阈值。影响面超过配置上限时拒绝，要求模型显式带 confirm: true 再来一次。
+        ///
+        /// 这道闸的意义不在于阻止"想改 600 个"，而在于阻止"以为在改 6 个、
+        /// 实际匹配到 600 个"——后者才是真正会毁掉模型的那种错误。
+        /// </summary>
+        protected static void GuardScale(
+            int affected, bool? confirm, ToolExecutionContext<UIApplication> context, string action)
+        {
+            var limit = context.MaxElementsPerWrite;
+            if (limit <= 0 || affected <= limit || confirm == true) return;
+
+            throw new ToolFailureException(McpDomainError.ConfirmationRequired,
+                "本次操作将" + action + " " + affected + " 个构件，超过单次上限 " + limit + " 个。" +
+                "确认这正是你想要的范围后，带上 confirm: true 重新调用；" +
+                "否则请收紧筛选条件（例如缩小类别范围或加上 nameContains）。");
+        }
+
+        /// <summary>
         /// 读取一个参数的值。
         /// 同时给出原始值与 AsValueString()——后者带单位、已按用户的显示设置格式化。
         /// 刻意不做单位换算：UnitUtils 的 API 在 2021 前后不兼容，绕开它省掉一整类版本问题。

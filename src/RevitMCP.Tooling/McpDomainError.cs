@@ -18,6 +18,13 @@ namespace RevitMCP.Tooling
         public const string ElementNotFound = "ELEMENT_NOT_FOUND";
         public const string InvalidParameter = "INVALID_PARAMETER";
         public const string TransactionFailed = "TRANSACTION_FAILED";
+
+        /// <summary>
+        /// 影响面超过阈值，需要模型显式带上 confirm: true 再来一次。
+        /// 单独成码而不是并入 INVALID_PARAMETER：模型看到它就知道
+        /// "参数没写错，只是这一步需要确认"，不会去瞎改别的参数。
+        /// </summary>
+        public const string ConfirmationRequired = "CONFIRMATION_REQUIRED";
         public const string ServerStopped = "SERVER_STOPPED";
 
         public static string Format(string code, string message) => code + ": " + message;

@@ -214,6 +214,7 @@ HTTP 层的义务（Origin 校验、Bearer 认证、era 判定、头/体一致�
 | `NO_ACTIVE_DOC` | Revit 中没有打开文档 | 需用户先打开模型 |
 | `WRITE_DISABLED` | 写保护未开启 | 需用户在 Ribbon 上开启 |
 | `SERVER_STOPPED` | 服务正在关闭 | — |
+| `CONFIRMATION_REQUIRED` | 影响面超过 `maxElementsPerWrite` | 可以，但必须带 `confirm: true` 重来 |
 | `ELEMENT_NOT_FOUND` / `INVALID_PARAMETER` / `TRANSACTION_FAILED` | 见字面 | 视情况 |
 
 "可否安全重试"这一列是这张表存在的理由：模型看到错误后要不要再来一次，全取决于它。
@@ -393,13 +394,24 @@ tools/call
 > `IWorkDispatcher<TContext>` 拿到线程编组能力，上下文在插件里是 `UIApplication`、
 > 在测试里是假模型。因此整条"HTTP → 协议 → 管线 → Schema → 工具"链路能在 CI 上端到端跑通。
 >
-> **[M3 备注] 事务那一步尚未接入**（图中"打开事务"一行），M4 补。当前只有只读工具。
+> **[M4 已修订] 事务那一步已接入**（图中"打开事务"一行）。接法是往管线注入
+> `IWriteScope<TContext>`——接口定义在不依赖 Revit 的 Tooling 层，真实现
+> `RevitWriteScope` 在 Addin 层。这样"只读工具不开事务、写工具开事务、失败必回滚"
+> 这套判断能脱离 Revit 测试，而它一旦错了代价是用户模型被改坏。
+>
+> **[M4 新增] 被抑制的警告随输出一起回来。** `ToolExecutionContext.Warnings` 由管线注入，
+> 失败预处理器、对话框拦截器和工具自己都往里写；管线在序列化后把非空的它并成输出的
+> `warnings` 字段。工具作者不必在自己的 Output DTO 里另开字段。
+> 调用失败时不附加——失败文本本身已说明原因，再挂一串警告只会喧宾夺主。
 >
 > **配置用委托读取而非启动时快照**：用户在 Ribbon 上切换写入开关后立即生效，不必重启服务。
 
 ---
 
 ## 7. ⑤ 事务与安全执行
+
+> **[M4 已实现]** 本节全部落地在 `src/RevitMCP.Addin/Execution/`：
+> `RevitWriteScope`（事务）、`McpFailurePreprocessor`（防线一）、`DialogSuppressor`（防线二）。
 
 ### 事务策略
 - 每个写工具跑在**独立 `Transaction`** 中，命名 `MCP: <工具名>`，用户在撤销栈里能看懂、能单步撤销。
@@ -428,7 +440,12 @@ uiApp.DialogBoxShowing += OnDialogBoxShowing;   // 工具执行期间启用，�
 ### 写保护
 - 默认 `writeEnabled = false`，只读工具可用，写工具直接返回 `WRITE_DISABLED`。
 - 用户在 Ribbon 上显式切换开关才启用写入，切换状态写回 `config.json` 与实例发现文件。
-- 建议再加**规模阈值**：单次工具修改超过 N 个构件（默认 500）时拒绝并要求显式 `confirm: true` 参数，防止模型一次误删整层楼。
+- **规模阈值**（M4 已实现）：单次工具修改超过 `maxElementsPerWrite`（默认 500）个构件时返回
+  `CONFIRMATION_REQUIRED`，要模型带显式 `confirm: true` 重来。判断在 `RevitTool.GuardScale`，
+  阈值由管线从配置送进 `ToolExecutionContext`。
+
+  这道闸的意义不在于阻止"想改 600 个"，而在于阻止"以为在改 6 个、实际匹配到 600 个"——
+  后者才是真正会毁掉模型的那种错误。
 
 ---
 
@@ -510,15 +527,57 @@ internal static class ElementIdCompat
 ```
 
 ### 插件清单
-`RevitMCP.addin` → `%APPDATA%\Autodesk\Revit\Addins\2024\`
+`RevitMCP.addin` → `%PROGRAMDATA%\Autodesk\Revit\Addins\2019\`
 ```xml
+<?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
   <AddIn Type="Application">
-    <Name>RevitMCP</Name>
+    <Name>App</Name>
     <Assembly>RevitMCP\RevitMCP.Addin.dll</Assembly>
-    <AddInId>（固定 GUID，各版本保持一致）</AddInId>
+    <ClientId>4938c604-c0a9-4e9b-a34d-d7ae44888413</ClientId>
     <FullClassName>RevitMCP.Addin.App</FullClassName>
-    <VendorId>RVTMCP</VendorId>
+    <VendorId>ADSK</VendorId>
+    <VendorDescription>Autodesk, www.autodesk.com</VendorDescription>
+  </AddIn>
+  <AddIn Type="Command">
+    <Assembly>RevitMCP\RevitMCP.Addin.dll</Assembly>
+    <ClientId>56e13c5a-4d8c-4467-9e5c-51c9da088280</ClientId>
+    <FullClassName>RevitMCP.Addin.Commands.CopyConnectCommand</FullClassName>
+    <Text>CopyConnectCommand</Text>
+    <Description>""</Description>
+    <VisibilityMode>AlwaysVisible</VisibilityMode>
+    <VendorId>ADSK</VendorId>
+    <VendorDescription>Autodesk, www.autodesk.com</VendorDescription>
+  </AddIn>
+  <AddIn Type="Command">
+    <Assembly>RevitMCP\RevitMCP.Addin.dll</Assembly>
+    <ClientId>8c2cfa6d-6381-4029-9d5d-12099ba0ca81</ClientId>
+    <FullClassName>RevitMCP.Addin.Commands.OpenLogCommand</FullClassName>
+    <Text>OpenLogCommand</Text>
+    <Description>""</Description>
+    <VisibilityMode>AlwaysVisible</VisibilityMode>
+    <VendorId>ADSK</VendorId>
+    <VendorDescription>Autodesk, www.autodesk.com</VendorDescription>
+  </AddIn>
+  <AddIn Type="Command">
+    <Assembly>RevitMCP\RevitMCP.Addin.dll</Assembly>
+    <ClientId>e3cd443f-edc3-4827-9f2d-727ed245a90a</ClientId>
+    <FullClassName>RevitMCP.Addin.Commands.ToggleServerCommand</FullClassName>
+    <Text>ToggleServerCommand</Text>
+    <Description>""</Description>
+    <VisibilityMode>AlwaysVisible</VisibilityMode>
+    <VendorId>ADSK</VendorId>
+    <VendorDescription>Autodesk, www.autodesk.com</VendorDescription>
+  </AddIn>
+  <AddIn Type="Command">
+    <Assembly>RevitMCP\RevitMCP.Addin.dll</Assembly>
+    <ClientId>2806cf0c-cd44-405c-8691-4904bd9a52e6</ClientId>
+    <FullClassName>RevitMCP.Addin.Commands.ToggleWriteModeCommand</FullClassName>
+    <Text>ToggleWriteModeCommand</Text>
+    <Description>""</Description>
+    <VisibilityMode>AlwaysVisible</VisibilityMode>
+    <VendorId>ADSK</VendorId>
+    <VendorDescription>Autodesk, www.autodesk.com</VendorDescription>
   </AddIn>
 </RevitAddIns>
 ```
@@ -583,7 +642,7 @@ RevitMCP/
 │  └─ RevitMCP.Addin/              # net48，引用 RevitAPI / RevitAPIUI
 │      ├─ App.cs                   # IExternalApplication + Ribbon
 │      ├─ Dispatcher/RevitDispatcher.cs
-│      ├─ Execution/               # 事务、失败预处理、对话框拦截
+│      ├─ Execution/               # 事务、失败预处理、对话框拦截（M4）
 │      ├─ Compat/ElementIdCompat.cs
 │      ├─ Services/                # 查询/参数/视图/几何
 │      ├─ Tools/                   # 具体工具实现
@@ -607,7 +666,7 @@ RevitMCP/
 | **M1 通路** ✅ | TcpListener HTTP + JSON-RPC + dual-era 握手 + Origin/Bearer/头校验 | `curl` 两代握手均通过；38 个端到端测试 |
 | **M2 调度** ✅ | `DispatchQueue` + `RevitDispatcher` + 双重超时语义 + 首个诊断工具 | 19 个调度测试（含变异验证）；**冒烟项 6 待在 Revit 中验证** |
 | **M3 工具框架** ✅ | `[McpTool]`、注册表、Schema 生成、双向映射、执行管线 + 4 个只读工具 | 58 个框架测试 + 4 个 HTTP 端到端；curl 验证 `tools/list`/`tools/call`。**真实 Revit 工具待在 Revit 中验证** |
-| **M4 写入** | 事务管线、失败预处理、对话框拦截、写保护、规模阈值 + 2 个写工具 | 冒烟项 4/5/7 通过 |
+| **M4 写入** ✅ | 事务管线、失败预处理、对话框拦截、写保护、规模阈值 + 2 个写工具 | 13 个写作用域测试（共 146 个）；六版本矩阵全编译。**冒烟项 4/5/7 待在 Revit 中验证** |
 | **M5 打磨** | SSE 进度通知、日志与审计、多实例发现、文档 | 完整冒烟清单通过 |
 
 首批工具（覆盖典型读写形态，用来验证框架而非堆功能）：
@@ -619,7 +678,14 @@ RevitMCP/
 同理 `ParseCategory` 在解析失败时会返回相近候选，而不是干巴巴一句"无效类别"——
 **面向模型的错误信息应当包含改正所需的信息**，这条原则贯穿整个工具层。
 
-**[M4 待做]** `revit_set_element_parameters`、`revit_create_wall`（写）。
+**[M4 已实现]** `revit_set_element_parameters`、`revit_create_wall`（写）。
+
+两个写工具各自验证了一类形态：前者是**批量改已有构件**（要全有全无的原子性、要规模闸、
+要把字符串按目标参数的 `StorageType` 转换），后者是**新建构件**（要解析并回填默认值，
+把"用了哪个标高、哪个墙类型"通过 `warnings` 告诉模型）。
+
+`revit_create_wall` 的坐标与尺寸一律用**毫米**，内部按 `1 ft = 304.8 mm` 这个精确定义值换算。
+不走 `UnitUtils` 是刻意的：它的 API 在 2021 前后不兼容，硬编码常量省掉一整类版本问题。
 
 ---
 
