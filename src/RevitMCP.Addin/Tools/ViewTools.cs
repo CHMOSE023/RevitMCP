@@ -12,6 +12,10 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ListViewsInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
+
         [McpParam("按视图类型过滤，如 FloorPlan、ThreeD、Section、Elevation、DrawingSheet、Schedule")]
         public string ViewType { get; set; }
 
@@ -54,10 +58,11 @@ namespace RevitMCP.Addin.Tools
         [McpParam("关联标高名")]
         public string Level { get; set; }
 
-        [McpParam("已放置在哪张图纸上的图纸 ID；未放置为 null")]
+        [McpParam("已放置在哪张图纸上的图纸 ID；未放置为 null。图纸本身没有这一项")]
         public string SheetId { get; set; }
 
-        [McpParam("所在图纸的编号")]
+        [McpParam("图纸编号。视图放在图纸上时是**所在图纸**的编号；" +
+                  "这一行本身就是图纸时，是**它自己的**编号")]
         public string SheetNumber { get; set; }
 
         [McpParam("是否为当前活动视图")]
@@ -81,7 +86,7 @@ namespace RevitMCP.Addin.Tools
 
     [McpTool("revit_list_views",
         Title = "列出视图与图纸",
-        Description = "列出模型中的视图、图纸及其类型、比例、所在图纸。" +
+        Description = "列出模型中的视图、图纸及其类型、比例、图纸编号。" +
                       "导出图片前用它挑视图；往图纸上摆视图前用它确认哪些还没被放置" +
                       "（sheetId 为 null 的才可以放——一个视图只能放在一张图纸上）。",
         ReadOnly = true,
@@ -93,15 +98,18 @@ namespace RevitMCP.Addin.Tools
 
         public override ListViewsOutput Execute(ListViewsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var uiDocument = RequireUiDocument(context);
-            var document = uiDocument.Document;
+            var document = ResolveDocument(context, input.DocumentId);
             var limit = Math.Min(Math.Max(input.Limit ?? DefaultLimit, 1), MaxLimit);
 
             ViewType? typeFilter = null;
             if (!string.IsNullOrWhiteSpace(input.ViewType)) typeFilter = ParseViewType(input.ViewType);
 
             var placement = MapViewsToSheets(document);
-            var activeId = SafeActiveViewId(uiDocument);
+
+            // 活动视图属于活动文档，查别的文档时这一列一律是 false
+            ElementId activeId = null;
+            if (string.IsNullOrWhiteSpace(input.DocumentId))
+                activeId = SafeActiveViewId(RequireUiDocument(context));
 
             var views = new List<ViewInfo>();
 
@@ -128,6 +136,12 @@ namespace RevitMCP.Addin.Tools
                 ElementId sheetId;
                 placement.TryGetValue(view.Id.GetValue(), out sheetId);
 
+                // 图纸自己的编号也要给出来。
+                // 图纸是它自己的身份标识（"把视图放到 A-101 上"靠的就是它），
+                // 而这一列原先只在"视图放在某张图纸上"时才有值——
+                // 于是一张图纸的编号反倒读不到，检查图纸编号规范只能绕道读参数
+                var isSheet = viewType == Autodesk.Revit.DB.ViewType.DrawingSheet;
+
                 views.Add(new ViewInfo
                 {
                     Id = view.Id.ToProtocolString(),
@@ -139,7 +153,9 @@ namespace RevitMCP.Addin.Tools
                     LevelId = SafeLevelId(view)?.ToProtocolString(),
                     Level = SafeLevelName(view),
                     SheetId = sheetId?.ToProtocolString(),
-                    SheetNumber = sheetId == null ? null : SheetNumberOf(document, sheetId),
+                    SheetNumber = isSheet
+                        ? SafeSheetNumber(view as ViewSheet)
+                        : (sheetId == null ? null : SheetNumberOf(document, sheetId)),
                     IsActive = activeId != null && view.Id == activeId
                 });
             }
@@ -199,6 +215,12 @@ namespace RevitMCP.Addin.Tools
 
             throw new ToolFailureException(McpDomainError.InvalidParameter,
                 "无法识别的视图类型 \"" + value + "\"" + hint);
+        }
+
+        private static string SafeSheetNumber(ViewSheet sheet)
+        {
+            try { return sheet?.SheetNumber; }
+            catch { return null; }
         }
 
         internal static string SheetNumberOf(Document document, ElementId sheetId)

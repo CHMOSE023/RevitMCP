@@ -1,0 +1,115 @@
+{
+  "name": "××建筑设计院 Revit 建模标准（节选）",
+  "version": "2.1",
+  "description": "由 示例企业建模标准.md 逐条翻译而来。id 与文档中的条款编号一一对应，改标准时两份一起改。",
+
+  "rules": [
+    {
+      "id": "1.1",
+      "title": "项目长度单位必须为毫米",
+      "type": "projectUnits",
+      "severity": "error",
+      "lengthUnit": "millimeters"
+    },
+    {
+      "id": "1.2",
+      "title": "模型不得存在未处理的警告",
+      "type": "maxWarnings",
+      "severity": "warning",
+      "max": 0
+    },
+    {
+      "id": "1.3",
+      "title": "不允许图元重叠",
+      "type": "maxWarnings",
+      "severity": "error",
+      "max": 0,
+      "descriptionContains": "重叠"
+    },
+
+    {
+      "id": "2.1",
+      "title": "至少包含两个建筑标高",
+      "type": "categoryPresent",
+      "severity": "error",
+      "category": "OST_Levels",
+      "min": 2
+    },
+    {
+      "id": "2.2",
+      "title": "每个建筑标高都要有楼层平面视图（基础/天花/屋顶线除外）",
+      "type": "levelsHaveViews",
+      "severity": "error",
+      "onlyBuildingStories": true,
+      "excludePattern": "Foundation|基础|Ceiling|天花|Roof|屋顶|Parapet|女儿墙"
+    },
+    {
+      "id": "2.3",
+      "title": "平面与剖面视图不得游离于图纸之外",
+      "type": "viewsOnSheets",
+      "severity": "warning",
+      "viewTypes": ["FloorPlan", "Section"]
+    },
+
+    {
+      "id": "3.1",
+      "title": "在用的墙类型命名必须含厚度数字",
+      "type": "namePattern",
+      "severity": "warning",
+      "category": "OST_Walls",
+      "scope": "type",
+      "onlyInUse": true,
+      "pattern": "\\d{2,}"
+    },
+    {
+      "id": "3.2",
+      "title": "不得使用样板自带的「常规」类型（口径比标准更严：在用即算违规）",
+      "type": "namePattern",
+      "severity": "warning",
+      "category": "OST_Walls",
+      "scope": "type",
+      "onlyInUse": true,
+      "negate": true,
+      "pattern": "^常规|^Generic"
+    },
+    {
+      "id": "3.3",
+      "title": "图纸编号必须形如 A-101",
+      "type": "sheetNumberFormat",
+      "severity": "error",
+      "pattern": "^[A-Z]-\\d{3}$"
+    },
+
+    {
+      "id": "4.1",
+      "title": "所有房间必须填写编号",
+      "type": "requiredParameter",
+      "severity": "error",
+      "category": "OST_Rooms",
+      "parameter": "编号"
+    },
+    {
+      "id": "4.2",
+      "title": "所有房间必须填写名称",
+      "type": "requiredParameter",
+      "severity": "error",
+      "category": "OST_Rooms",
+      "parameter": "名称"
+    },
+    {
+      "id": "4.3",
+      "title": "房间必须围合，不得有面积为 0 的房间",
+      "type": "roomsBounded",
+      "severity": "error"
+    },
+
+    {
+      "id": "5.1",
+      "title": "至少包含一张图纸",
+      "type": "categoryPresent",
+      "severity": "error",
+      "category": "OST_Sheets",
+      "min": 1
+    }
+  ]
+}

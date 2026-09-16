@@ -38,6 +38,44 @@ namespace RevitMCP.Addin.Tools
         }
 
         /// <summary>
+        /// 取要操作的文档：给了 documentId 就用那一个，否则用当前活动文档。
+        ///
+        /// 一个 Revit 实例可以同时开着十几个项目，批量审计就是冲着它们去的。
+        /// Revit 允许对任何打开的文档做只读查询，**不需要先把它切成活动文档**——
+        /// 切换活动文档会打断用户正在看的东西，而查询不该有这种副作用。
+        ///
+        /// 只读工具才给这个参数。写操作一律只作用于活动文档：
+        /// 让模型去改一个用户根本没在看的文档，风险和收益完全不成比例。
+        /// </summary>
+        protected static Document ResolveDocument(
+            ToolExecutionContext<UIApplication> context, string documentId)
+        {
+            if (string.IsNullOrWhiteSpace(documentId)) return RequireDocument(context);
+
+            var wanted = documentId.Trim();
+
+            foreach (var document in DocumentRef.Opened(context.Host, includeLinked: true))
+            {
+                if (string.Equals(DocumentRef.KeyOf(document), wanted, StringComparison.OrdinalIgnoreCase))
+                    return document;
+            }
+
+            var opened = new List<string>();
+            foreach (var document in DocumentRef.Opened(context.Host))
+            {
+                var key = DocumentRef.KeyOf(document);
+                if (key != null) opened.Add(key);
+            }
+
+            throw new ToolFailureException(McpDomainError.ElementNotFound,
+                "没有打开 ID 为「" + documentId + "」的文档。" +
+                (opened.Count > 0
+                    ? "当前打开的是：" + string.Join("、", opened.ToArray())
+                    : "当前没有打开任何文档") +
+                "。用 revit_list_documents 查看。");
+        }
+
+        /// <summary>
         /// 把字符串解析成 BuiltInCategory。
         /// 解析失败时给出相近的候选——模型靠这个纠正拼写，比单纯报错有用得多。
         /// </summary>

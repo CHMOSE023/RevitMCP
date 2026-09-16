@@ -5,9 +5,9 @@
 
 支持 **Revit 2019 – 2024**。架构设计见 [docs/architecture.md](docs/architecture.md)。
 
-> 当前进度：**M8 完成并已在 Revit 2019 实测通过**。
-> 视图、图纸、图片导出、明细表就位——能从模型交付出一套图纸和一份带截图的质检报告。
-> 共 24 个工具：15 个只读 + 9 个写。
+> 当前进度：**M9 完成并已在 Revit 2019 实测通过**。
+> 企业标准可执行化 + 跨文档批量审计——一个会话把 Revit 里开着的十几个模型过一遍标准，产出汇总。
+> 共 27 个工具：17 个只读 + 10 个写。
 
 ---
 
@@ -87,6 +87,7 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | 工具 | 作用 |
 |---|---|
 | `revit_get_document_info` | 当前文档标题、路径、活动视图、写入模式是否开启 |
+| `revit_list_documents` | 这个 Revit 里打开的所有文档。批量审计从它开始 |
 | `revit_get_project_units` | 项目的长度/面积/体积显示单位，以及它与工具单位是否一致 |
 | `revit_list_categories` | 模型中实际存在构件的类别及数量（查询前先用它确认类别名）|
 | `revit_list_types` | 按类别列出族类型及其 ID、厚度、使用数量——建模前靠它挑规格 |
@@ -99,6 +100,7 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_list_views` | 视图与图纸及其类型、比例、所在图纸 |
 | `revit_export_image` | 把视图或图纸导成图片落盘，返回完整路径 |
 | `revit_read_schedule` | 把明细表读成表格数据 |
+| `revit_list_schedulable_fields` | 某类别做明细表能选哪些字段（字段名随项目语言，别猜）|
 | `revit_get_selection` | 用户此刻在 Revit 里选中了什么 |
 
 **改模型**（需要用户在 Ribbon 上切到「修改模型」）
@@ -110,7 +112,8 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_create_surface_based_elements` | 按闭合边界批量建楼板、屋顶、天花 |
 | `revit_create_rooms` | 按点批量建房间，回执直接给出面积 |
 | `revit_create_sheets` | 批量建图纸 |
-| `revit_add_views_to_sheet` | 把视图摆到图纸上，回读实际位置并检查越界 |
+| `revit_create_schedule` | 按类别建明细表，选字段、排序 |
+| `revit_add_views_to_sheet` | 把视图或明细表摆到图纸上，回读实际位置并检查越界 |
 | `revit_activate_view` | 切换活动视图（改界面不改模型，见下） |
 | `revit_set_element_parameters` | 批量改同一个参数，全有全无 |
 | `revit_delete_elements` | 删除构件，先预览连带影响再确认 |
@@ -130,6 +133,21 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 判据是**会不会改变别人的答案**：切换活动视图会改变 `activeViewOnly` 查询和"导出当前视图"的结果，
 而选择集不会。`revit_export_image` 虽然往磁盘写文件，但不改模型也不改别的工具的答案，
 所以仍是只读——只读的质检流程恰恰最需要截图，要求先开修改模式才能截个图说不通。
+
+### 一个 Revit 能同时开十几个模型
+
+批量审计就是冲着它们去的。**Revit 允许对任何打开的文档做只读查询，不必先切成活动文档**——
+切过去会打断用户正在看的东西，而查询本不该有这种副作用。
+
+所以只读工具都有一个可选的 `documentId`（来自 `revit_list_documents`）：省略就是活动文档，
+给了就查那一个。
+
+**写操作一律只作用于活动文档。** 让模型去改一个用户根本没在看的文档，
+风险和收益完全不成比例。
+
+跨文档时无意义的概念会被明确拒绝，而不是给个看似合理的错答案：
+`activeViewOnly` 对别的文档谈不上（活动视图属于整个 Revit，只存在于活动文档里），
+`list_views` 的"是否活动视图"一列在跨文档时一律 false。
 
 ### 建模工具为什么按几何形态分，而不按构件类型
 
@@ -259,6 +277,46 @@ foreach (var element in elements)
 - **入参只记摘要。** 500 个 ID 原样写进日志等于没写。
 - **绕过 `logLevel`。** 把日志级别调高不该让审计悄悄消失，那恰恰是最需要它的时候。
 
+## 用企业标准复核模型
+
+M9 回答的是这个问题：**手里有一份院里的建模标准，怎么让它自动复核模型？**
+
+```
+standards/示例企业建模标准.md     ← 给人看的标准（自然语言条款）
+standards/示例企业建模标准.json   ← 给机器跑的规则（条款编号一一对应）
+standards/Audit.ps1              ← 检查器（10 种规则类型）
+m9-audit.ps1 / m9-batch.ps1      ← 单个 / 批量复核，产出 Markdown 报告
+```
+
+```bash
+# 复核当前模型
+powershell -File workflows/m9-audit.ps1 -Standard workflows/standards/示例企业建模标准.json
+
+# 把 Revit 里打开的所有文档都过一遍，汇总出"哪条规则最常被违反"
+powershell -File workflows/m9-batch.ps1 -Standard workflows/standards/示例企业建模标准.json
+```
+
+**规则是数据，不是代码。** JSON 进版本库——能 diff、能 review、能进 PR、能按项目分支。
+这和本项目拒绝内建数据库是同一条理由：与其维护一个会过期的黑盒，
+不如让规则以纯文本的形式活在它该在的地方。
+
+三条从实践里长出来的做法：
+
+**违规必须点名到构件 ID。** 一句"命名不规范"没人能据此动手。
+
+**规则自己崩了算不合格，不算通过。** 它没能证明模型是好的——
+"没查出问题"和"没查"是两回事。
+
+**验不了的条款要写明为什么，别假装能验。** 示例标准末尾专门有一节列出来：
+"需在《警告说明表》中备案"涉及模型之外的文档；"随模型交付"是流程概念而不是模型状态。
+一份标准里有多少条真能机检，本身就是有价值的信息。
+
+还有一条是试跑之后才知道的：**标准要在自己的模型上校准**。
+示例里条款 2.2 原本写"每个建筑标高都必须有楼层平面视图"，
+在官方样例模型上一跑，Foundation / Ceiling / Roof Line 全被判违规——
+它们确实标着"建筑楼层"，但本来就不出平面图。
+**条款不是被规则推翻的，是被真实模型推翻的。**
+
 ## 工作流脚本
 
 `workflows/` 下是把里程碑的验收标准固化成的可执行脚本。它们同时是回归测试和演示素材——
@@ -269,6 +327,8 @@ foreach (var element in elements)
 | [`m6-closed-loop.ps1`](workflows/m6-closed-loop.ps1) | 建一圈墙（故意建错一面）→ 靠警告发现 → 预览后删掉 → 复查干净 → 选中交回用户 |
 | [`m7-space.ps1`](workflows/m7-space.ps1) | 围出两间房 → 读面积与边界 → 查"房间里有什么" → 用警告与包围盒判断两面墙是否打架 |
 | [`m8-delivery.ps1`](workflows/m8-delivery.ps1) | 建图纸摆视图 → 导出 PNG → 验证路径闸 → 质检 → 写出一份带截图的 Markdown 报告 |
+| [`m9-audit.ps1`](workflows/m9-audit.ps1) | 把一份企业标准跑在一个模型上，产出合规报告 |
+| [`m9-batch.ps1`](workflows/m9-batch.ps1) | 把同一份标准跑遍所有打开的文档，汇总出"哪条规则最常被违反" |
 | [`McpClient.ps1`](workflows/McpClient.ps1) | 连接与调用辅助：自动发现本机实例、读取令牌、走 modern era 无状态调用 |
 
 ```bash
@@ -352,8 +412,8 @@ powershell -ExecutionPolicy Bypass -File workflows/m6-closed-loop.ps1
 | M5 | SSE 进度通知、审计日志、多实例发现完善 | ✅ 完成 |
 | M6 | 建模工具按几何形态重构（批量签名）、模型警告、删除、类型与标高发现、选择集、项目单位 | ✅ 完成 |
 | M7 | 房间、几何最小集、空间过滤、文档身份 | ✅ 完成 |
-| M8 | 视图与图纸、导出图片、明细表读取、工具行为提示 | ✅ 完成 |
-| M9 | 多实例批处理、企业标准可执行化、外部系统对接 | 规划中 |
+| M8 | 视图与图纸、导出图片、明细表读写、工具行为提示 | ✅ 完成 |
+| M9 | 跨文档批量审计、企业标准可执行化 | ✅ 完成 |
 
 M6 起每个阶段的验收标准都是**一条能跑通的真实工作流**，而不是工具清单打勾——
 M6 是"建错 → 自己发现 → 自己删掉 → 重建，全程不用人按 Ctrl+Z"。

@@ -12,6 +12,9 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ProjectUnitsInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
     }
 
     public sealed class UnitFormat
@@ -58,7 +61,7 @@ namespace RevitMCP.Addin.Tools
 
         public override ProjectUnitsOutput Execute(ProjectUnitsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
 
             var output = new ProjectUnitsOutput { ToolLengthUnit = ToolUnit };
 
@@ -90,6 +93,10 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class GetWarningsInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
+
         [McpParam("只返回描述中包含该文本的警告（不区分大小写）")]
         public string DescriptionContains { get; set; }
 
@@ -152,7 +159,7 @@ namespace RevitMCP.Addin.Tools
 
         public override GetWarningsOutput Execute(GetWarningsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
 
             var limit = Math.Max(input.Limit ?? DefaultLimit, 1);
             var perGroup = Math.Max(input.MaxElementsPerGroup ?? DefaultElementsPerGroup, 1);

@@ -13,6 +13,10 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ListRoomsInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
+
         [McpParam("按房间名或编号过滤（不区分大小写的子串匹配）")]
         public string NameContains { get; set; }
 
@@ -116,7 +120,7 @@ namespace RevitMCP.Addin.Tools
 
         public override ListRoomsOutput Execute(ListRoomsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
             var limit = Math.Min(Math.Max(input.Limit ?? DefaultLimit, 1), MaxLimit);
 
             ElementId levelFilter = null;

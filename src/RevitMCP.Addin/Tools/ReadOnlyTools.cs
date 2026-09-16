@@ -72,6 +72,10 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ListCategoriesInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
+
         [McpParam("只返回名称或 BuiltInCategory 中包含该文本的类别（不区分大小写）")]
         public string Filter { get; set; }
 
@@ -110,7 +114,7 @@ namespace RevitMCP.Addin.Tools
     {
         public override ListCategoriesOutput Execute(ListCategoriesInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
             var onlyNonEmpty = input.OnlyNonEmpty ?? true;
 
             // 一次遍历统计各类别数量，比逐类别建 collector 快一个数量级
@@ -184,6 +188,10 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class QueryElementsInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
+
         [McpParam("BuiltInCategory 名，如 OST_Walls、OST_Doors。可省略 OST_ 前缀。" +
                   "不确定时先调用 revit_list_categories。" +
                   "给了空间过滤条件时可以省略它，此时会跨类别查")]
@@ -233,8 +241,8 @@ namespace RevitMCP.Addin.Tools
 
         public override QueryElementsOutput Execute(QueryElementsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var uiDocument = RequireUiDocument(context);
-            var document = uiDocument.Document;
+            var document = ResolveDocument(context, input.DocumentId);
+            var crossDocument = !string.IsNullOrWhiteSpace(input.DocumentId);
 
             if (input.WithinBox != null && input.Near != null)
                 throw new ToolFailureException(McpDomainError.InvalidParameter,
@@ -254,7 +262,13 @@ namespace RevitMCP.Addin.Tools
             FilteredElementCollector collector;
             if (input.ActiveViewOnly == true)
             {
-                var view = uiDocument.ActiveView;
+                // "活动视图"是相对整个 Revit 而言的，只存在于活动文档里。
+                // 对别的文档谈这个概念没有意义，硬要支持只会给出一个看似合理的错答案
+                if (crossDocument)
+                    throw new ToolFailureException(McpDomainError.InvalidParameter,
+                        "activeViewOnly 只能用于当前活动文档。查别的文档时请去掉它，或者改用 withinBox / near 限定范围。");
+
+                var view = RequireUiDocument(context).ActiveView;
                 if (view == null)
                     throw new ToolFailureException(McpDomainError.InvalidParameter,
                         "当前没有活动视图，无法使用 activeViewOnly。");
@@ -403,6 +417,10 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class GetParametersInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
+
         [McpParam("要读取的构件 ID 列表（字符串形式，来自 revit_query_elements）", Required = true)]
         public List<string> ElementIds { get; set; }
 
@@ -452,7 +470,7 @@ namespace RevitMCP.Addin.Tools
 
         public override GetParametersOutput Execute(GetParametersInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
 
             if (input.ElementIds == null || input.ElementIds.Count == 0)
                 throw new ToolFailureException(McpDomainError.InvalidParameter, "elementIds 不能为空。");

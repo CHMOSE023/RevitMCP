@@ -12,6 +12,10 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ListTypesInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
+
         [McpParam("BuiltInCategory 名，如 OST_Walls、OST_Doors。可省略 OST_ 前缀", Required = true)]
         public string Category { get; set; }
 
@@ -75,7 +79,7 @@ namespace RevitMCP.Addin.Tools
 
         public override ListTypesOutput Execute(ListTypesInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
             var category = ParseCategory(input.Category);
             var limit = Math.Min(Math.Max(input.Limit ?? DefaultLimit, 1), MaxLimit);
 
@@ -221,6 +225,9 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ListLevelsInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
+        public string DocumentId { get; set; }
     }
 
     public sealed class LevelInfo
@@ -260,15 +267,19 @@ namespace RevitMCP.Addin.Tools
     {
         public override ListLevelsOutput Execute(ListLevelsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
 
             ElementId activeLevelId = null;
-            try
+            // 只有活动文档才谈得上"活动视图所在的标高"
+            if (string.IsNullOrWhiteSpace(input.DocumentId))
             {
-                var genLevel = document.ActiveView == null ? null : document.ActiveView.GenLevel;
-                if (genLevel != null) activeLevelId = genLevel.Id;
+                try
+                {
+                    var genLevel = document.ActiveView == null ? null : document.ActiveView.GenLevel;
+                    if (genLevel != null) activeLevelId = genLevel.Id;
+                }
+                catch { /* 某些视图类型取不到关联标高，不影响列表本身 */ }
             }
-            catch { /* 某些视图类型取不到关联标高，不影响列表本身 */ }
 
             var levels = new FilteredElementCollector(document)
                 .OfClass(typeof(Level))

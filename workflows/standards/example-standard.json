@@ -1,0 +1,69 @@
+{
+  "name": "示例建模标准",
+  "version": "1.0",
+  "description": "把公司的建模规范写成可执行的规则。放进版本库，按项目分支，改动走 PR。",
+
+  "rules": [
+    {
+      "id": "units-metric",
+      "title": "项目必须用毫米",
+      "type": "projectUnits",
+      "severity": "error",
+      "lengthUnit": "millimeters"
+    },
+    {
+      "id": "no-warnings",
+      "title": "模型不应有未处理的警告",
+      "type": "maxWarnings",
+      "severity": "warning",
+      "max": 0
+    },
+    {
+      "id": "no-overlap",
+      "title": "不允许图元重叠",
+      "type": "maxWarnings",
+      "severity": "error",
+      "max": 0,
+      "descriptionContains": "重叠"
+    },
+    {
+      "id": "rooms-bounded",
+      "title": "房间必须围合",
+      "type": "roomsBounded",
+      "severity": "error"
+    },
+    {
+      "id": "wall-type-naming",
+      "title": "在用的墙类型命名要带厚度",
+      "type": "namePattern",
+      "severity": "warning",
+      "category": "OST_Walls",
+      "scope": "type",
+      "onlyInUse": true,
+      "pattern": "\\d+\\s*mm|\\d{2,}"
+    },
+    {
+      "id": "rooms-numbered",
+      "title": "房间必须有编号",
+      "type": "requiredParameter",
+      "severity": "error",
+      "category": "OST_Rooms",
+      "parameter": "编号"
+    },
+    {
+      "id": "views-on-sheets",
+      "title": "平面与剖面视图应放到图纸上",
+      "type": "viewsOnSheets",
+      "severity": "warning",
+      "viewTypes": ["FloorPlan", "Section"]
+    },
+    {
+      "id": "has-levels",
+      "title": "模型至少要有两个标高",
+      "type": "categoryPresent",
+      "severity": "error",
+      "category": "OST_Levels",
+      "min": 2
+    }
+  ]
+}

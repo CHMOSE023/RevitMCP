@@ -84,6 +84,43 @@ function Connect-RevitMcp {
     }
 }
 
+function Get-RevitInstances {
+    <#
+    .SYNOPSIS
+        列出本机所有正在跑的 RevitMCP 实例。
+    .DESCRIPTION
+        实例发现文件里已经有端口、活动文档、写入开关，批处理据此逐个连过去——
+        不需要用户手工抄端口号，也不需要服务之间互相知道对方存在。
+    .OUTPUTS
+        每个实例一个对象：Pid / Port / Endpoint / RevitVersion / ActiveDocument / WriteEnabled
+    #>
+    [CmdletBinding()]
+    param()
+
+    $dir = Join-Path $env:LOCALAPPDATA 'RevitMCP\instances'
+    if (-not (Test-Path $dir)) { return @() }
+
+    $instances = @()
+    foreach ($file in (Get-ChildItem -Path $dir -Filter 'revit-*.json' -ErrorAction SilentlyContinue)) {
+        try {
+            $raw = Get-Content $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            $instances += [PSCustomObject]@{
+                Pid            = $raw.pid
+                Port           = $raw.port
+                Endpoint       = $raw.endpoint
+                RevitVersion   = $raw.revitVersion
+                ActiveDocument = $raw.activeDocument
+                WriteEnabled   = $raw.writeEnabled
+            }
+        }
+        catch {
+            Write-Warning "实例文件 $($file.Name) 读取失败，跳过。"
+        }
+    }
+
+    return @($instances | Sort-Object Pid)
+}
+
 function Invoke-RevitTool {
     <#
     .SYNOPSIS
