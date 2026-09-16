@@ -1,0 +1,90 @@
+<Project>
+
+  <!--
+    RevitMCP 全局构建配置。
+    配置名形如 "Debug R24" / "Release R19"，R 后面的年份同时决定：
+      · TargetFramework   （2019/2020 = net47，2021+ = net48，随 Revit 自身的 CLR 版本）
+      · Revit API 包版本
+      · 条件编译符号       （REVIT2024 与累进的 REVIT2021_OR_GREATER 等）
+    新增一个 Revit 版本 = 在下面加一个 PropertyGroup + 在 Configurations 里加两项。
+  -->
+
+  <PropertyGroup>
+    <Configurations>Debug R19;Debug R20;Debug R21;Debug R22;Debug R23;Debug R24</Configurations>
+    <Configurations>$(Configurations);Release R19;Release R20;Release R21;Release R22;Release R23;Release R24</Configurations>
+    <Configuration Condition="'$(Configuration)' == ''">Debug R24</Configuration>
+  </PropertyGroup>
+
+  <!-- ==================== 版本矩阵 ==================== -->
+  <PropertyGroup Condition="$(Configuration.Contains('R19'))">
+    <RevitYear>2019</RevitYear>
+    <RevitTargetFramework>net47</RevitTargetFramework>
+    <RevitApiVersion>2019.2.11</RevitApiVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(Configuration.Contains('R20'))">
+    <RevitYear>2020</RevitYear>
+    <RevitTargetFramework>net47</RevitTargetFramework>
+    <RevitApiVersion>2020.2.60</RevitApiVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(Configuration.Contains('R21'))">
+    <RevitYear>2021</RevitYear>
+    <RevitTargetFramework>net48</RevitTargetFramework>
+    <RevitApiVersion>2021.1.50</RevitApiVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(Configuration.Contains('R22'))">
+    <RevitYear>2022</RevitYear>
+    <RevitTargetFramework>net48</RevitTargetFramework>
+    <RevitApiVersion>2022.1.80</RevitApiVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(Configuration.Contains('R23'))">
+    <RevitYear>2023</RevitYear>
+    <RevitTargetFramework>net48</RevitTargetFramework>
+    <RevitApiVersion>2023.1.90</RevitApiVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(Configuration.Contains('R24'))">
+    <RevitYear>2024</RevitYear>
+    <RevitTargetFramework>net48</RevitTargetFramework>
+    <RevitApiVersion>2024.3.60</RevitApiVersion>
+  </PropertyGroup>
+
+  <!-- ==================== 通用 ==================== -->
+  <PropertyGroup>
+    <TargetFramework>$(RevitTargetFramework)</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Version>0.1.0</Version>
+    <Company>RevitMCP</Company>
+    <Product>RevitMCP</Product>
+    <DebugType Condition="$(Configuration.StartsWith('Release'))">none</DebugType>
+    <DebugType Condition="$(Configuration.StartsWith('Debug'))">portable</DebugType>
+    <Optimize Condition="$(Configuration.StartsWith('Release'))">true</Optimize>
+    <!-- 构建产物落到 artifacts/<Revit年份>[-debug]/，install.ps1 直接从这里取。
+         Debug 与 Release 必须分开：否则先 Debug 再 Release 会留下 Release 的 dll
+         配 Debug 的 pdb，调试时的表现会很难解释。 -->
+    <ArtifactFlavor Condition="$(Configuration.StartsWith('Debug'))">-debug</ArtifactFlavor>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)artifacts\$(RevitYear)$(ArtifactFlavor)\</BaseOutputPath>
+    <OutputPath>$(BaseOutputPath)</OutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)obj\$(MSBuildProjectName)\$(RevitYear)$(ArtifactFlavor)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+
+  <!-- 条件编译符号：精确版本 + 累进版本 -->
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);REVIT$(RevitYear)</DefineConstants>
+    <DefineConstants Condition="$(RevitYear) &gt;= 2019">$(DefineConstants);REVIT2019_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitYear) &gt;= 2020">$(DefineConstants);REVIT2020_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitYear) &gt;= 2021">$(DefineConstants);REVIT2021_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitYear) &gt;= 2022">$(DefineConstants);REVIT2022_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitYear) &gt;= 2023">$(DefineConstants);REVIT2023_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitYear) &gt;= 2024">$(DefineConstants);REVIT2024_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 没有安装 VS/目标包的机器也能 dotnet build net47/net48 -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

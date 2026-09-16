@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 宿主层：Revit 插件入口、Ribbon、调度器、工具实现。唯一引用 Revit API 的程序集。 -->
+  <PropertyGroup>
+    <RootNamespace>RevitMCP.Addin</RootNamespace>
+    <AssemblyName>RevitMCP.Addin</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RevitMCP.Protocol\RevitMCP.Protocol.csproj" />
+    <ProjectReference Include="..\RevitMCP.Transport\RevitMCP.Transport.csproj" />
+    <ProjectReference Include="..\RevitMCP.Tooling\RevitMCP.Tooling.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ref/ 引用程序集，不会拷贝到输出目录 —— 绝不能把 RevitAPI.dll 随插件分发 -->
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="$(RevitApiVersion)" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="$(RevitApiVersion)" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ribbon 图标用 WPF 在运行时绘制，不引入二进制资源文件 -->
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Xaml" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 传输层：基于 TcpListener 的最小 HTTP/1.1 + SSE（M1 实现）。无 Revit 依赖。 -->
+  <PropertyGroup>
+    <RootNamespace>RevitMCP.Transport</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RevitMCP.Protocol\RevitMCP.Protocol.csproj" />
+  </ItemGroup>
+</Project>

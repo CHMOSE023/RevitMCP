@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>RevitMCP</Name>
+    <Assembly>RevitMCP\RevitMCP.Addin.dll</Assembly>
+    <!-- AddInId 在所有 Revit 版本间保持一致，便于用户识别同一插件 -->
+    <AddInId>CDC31FBA-EF1F-4BED-9B9D-900335B3077C</AddInId>
+    <FullClassName>RevitMCP.Addin.App</FullClassName>
+    <VendorId>RVTMCP</VendorId>
+    <VendorDescription>RevitMCP</VendorDescription>
+  </AddIn>
+</RevitAddIns>

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 协议层：JSON-RPC 2.0 + MCP 消息。刻意不引用 Revit API，也不引用任何第三方包，
+       以便脱离 Revit 做单元测试，并规避 Revit 单 AppDomain 下的程序集版本冲突。 -->
+  <PropertyGroup>
+    <RootNamespace>RevitMCP.Protocol</RootNamespace>
+  </PropertyGroup>
+</Project>

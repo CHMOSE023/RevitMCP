@@ -1,0 +1,177 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using RevitMCP.Addin.Diagnostics;
+using RevitMCP.Protocol.Json;
+
+namespace RevitMCP.Addin.Configuration
+{
+    /// <summary>
+    /// %APPDATA%\RevitMCP\config.json
+    ///
+    /// 读取容错：任何单项缺失或类型不对都回退到默认值，不让一个坏字段导致插件起不来。
+    /// 文件损坏时整体回退到默认配置，并把坏文件改名保留，方便排查。
+    /// </summary>
+    public sealed class McpConfig
+    {
+        public int Port { get; set; } = 7801;
+        public bool AutoStart { get; set; } = true;
+        public string Token { get; set; }
+        public bool WriteEnabled { get; set; } = false;
+        public int MaxElementsPerWrite { get; set; } = 500;
+        public int DefaultToolTimeoutSeconds { get; set; } = 60;
+        public List<string> DisabledTools { get; set; } = new List<string>();
+        public List<string> AllowedOrigins { get; set; } = new List<string>
+        {
+            "http://localhost", "http://127.0.0.1", "https://claude.ai"
+        };
+        public LogLevel LogLevel { get; set; } = LogLevel.Information;
+
+        public static string DefaultPath => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "RevitMCP", "config.json");
+
+        public static McpConfig Load(string path = null)
+        {
+            path = path ?? DefaultPath;
+            var config = new McpConfig();
+
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    config.Token = GenerateToken();
+                    config.Save(path);
+                    Log.Info("已生成默认配置：" + path);
+                    return config;
+                }
+
+                var root = JsonValue.Parse(File.ReadAllText(path, Encoding.UTF8));
+                if (!root.IsObject) throw new JsonException("配置根节点必须是对象。");
+
+                config.Port = ReadInt(root, "port", config.Port);
+                config.AutoStart = ReadBool(root, "autoStart", config.AutoStart);
+                config.Token = ReadString(root, "token", null);
+                config.WriteEnabled = ReadBool(root, "writeEnabled", config.WriteEnabled);
+                config.MaxElementsPerWrite = ReadInt(root, "maxElementsPerWrite", config.MaxElementsPerWrite);
+                config.DefaultToolTimeoutSeconds = ReadInt(root, "defaultToolTimeoutSeconds", config.DefaultToolTimeoutSeconds);
+                config.DisabledTools = ReadStringList(root, "disabledTools", config.DisabledTools);
+                config.AllowedOrigins = ReadStringList(root, "allowedOrigins", config.AllowedOrigins);
+                config.LogLevel = ReadEnum(root, "logLevel", config.LogLevel);
+
+                if (string.IsNullOrEmpty(config.Token))
+                {
+                    config.Token = GenerateToken();
+                    config.Save(path);
+                    Log.Info("配置中缺少 token，已重新生成。");
+                }
+
+                return config;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("读取配置失败，回退到默认配置：" + path, ex);
+                QuarantineBadFile(path);
+                var fallback = new McpConfig { Token = GenerateToken() };
+                try { fallback.Save(path); } catch { }
+                return fallback;
+            }
+        }
+
+        public void Save(string path = null)
+        {
+            path = path ?? DefaultPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+
+            var root = JsonValue.NewObject()
+                .Set("port", Port)
+                .Set("autoStart", AutoStart)
+                .Set("token", Token ?? string.Empty)
+                .Set("writeEnabled", WriteEnabled)
+                .Set("maxElementsPerWrite", MaxElementsPerWrite)
+                .Set("defaultToolTimeoutSeconds", DefaultToolTimeoutSeconds)
+                .Set("disabledTools", ToArray(DisabledTools))
+                .Set("allowedOrigins", ToArray(AllowedOrigins))
+                .Set("logLevel", LogLevel.ToString());
+
+            // 先写临时文件再替换，避免写一半崩溃留下半截文件
+            var temp = path + ".tmp";
+            File.WriteAllText(temp, root.ToJson(indented: true), new UTF8Encoding(false));
+            if (File.Exists(path)) File.Delete(path);
+            File.Move(temp, path);
+        }
+
+        private static JsonValue ToArray(IEnumerable<string> values)
+        {
+            var arr = JsonValue.NewArray();
+            if (values != null)
+                foreach (var v in values) arr.Add(v);
+            return arr;
+        }
+
+        private static string GenerateToken()
+        {
+            var bytes = new byte[32];
+            using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(bytes);
+            // URL-safe base64，方便直接放进命令行和 HTTP 头
+            return Convert.ToBase64String(bytes).Replace('+', '-').Replace('/', '_').TrimEnd('=');
+        }
+
+        private static void QuarantineBadFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+                var backup = path + ".bad-" + DateTime.Now.ToString("yyyyMMddHHmmss");
+                File.Move(path, backup);
+                Log.Warn("损坏的配置已保留为：" + backup);
+            }
+            catch { }
+        }
+
+        // ---------- 容错读取 ----------
+        private static int ReadInt(JsonValue root, string key, int fallback)
+        {
+            try { return root.TryGet(key, out var v) && v.Kind == JsonKind.Number ? (int)v.AsInt64 : fallback; }
+            catch { return fallback; }
+        }
+
+        private static bool ReadBool(JsonValue root, string key, bool fallback)
+        {
+            try { return root.TryGet(key, out var v) && v.Kind == JsonKind.Bool ? v.AsBool : fallback; }
+            catch { return fallback; }
+        }
+
+        private static string ReadString(JsonValue root, string key, string fallback)
+        {
+            try { return root.TryGet(key, out var v) && v.Kind == JsonKind.String ? v.AsString : fallback; }
+            catch { return fallback; }
+        }
+
+        private static List<string> ReadStringList(JsonValue root, string key, List<string> fallback)
+        {
+            try
+            {
+                if (!root.TryGet(key, out var v) || !v.IsArray) return fallback;
+                var list = new List<string>();
+                foreach (var item in v.Items)
+                    if (item.Kind == JsonKind.String) list.Add(item.AsString);
+                return list;
+            }
+            catch { return fallback; }
+        }
+
+        private static LogLevel ReadEnum(JsonValue root, string key, LogLevel fallback)
+        {
+            try
+            {
+                var text = ReadString(root, key, null);
+                if (string.IsNullOrEmpty(text)) return fallback;
+                return (LogLevel)Enum.Parse(typeof(LogLevel), text, ignoreCase: true);
+            }
+            catch { return fallback; }
+        }
+    }
+}

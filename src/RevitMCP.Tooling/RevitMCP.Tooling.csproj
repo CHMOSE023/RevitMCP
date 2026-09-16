@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 工具框架：[McpTool] 注册、JSON Schema 生成、执行管线（M3 实现）。无 Revit 依赖。 -->
+  <PropertyGroup>
+    <RootNamespace>RevitMCP.Tooling</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RevitMCP.Protocol\RevitMCP.Protocol.csproj" />
+  </ItemGroup>
+</Project>
