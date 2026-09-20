@@ -181,7 +181,7 @@ namespace RevitMCP.Addin.Tools
             if (topLevel != null)
                 CreateSupport.ApplyTopConstraint(
                     wall, BuiltInParameter.WALL_HEIGHT_TYPE, BuiltInParameter.WALL_TOP_OFFSET,
-                    topLevel, topOffsetMm, context);
+                    topLevel, topOffsetMm, context, index);
 
             return new CreatedElement
             {

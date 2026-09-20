@@ -369,6 +369,50 @@ namespace RevitMCP.Server.Tests
             }
         }
 
+        [Theory]
+        // 前缀匹配时代的漏网之鱼：这些字符串都以某个允许项开头，却是完全不同的域名
+        [InlineData("https://claude.ai.evil.example")]
+        [InlineData("https://claude.ainode.example")]
+        [InlineData("http://localhost.evil.example")]
+        // scheme 不同就是不同的来源
+        [InlineData("http://claude.ai")]
+        // 端口：非本机来源必须完全一致
+        [InlineData("https://claude.ai:8443")]
+        // 带用户信息的写法不能被当成同一个 host
+        [InlineData("https://claude.ai@evil.example")]
+        // 浏览器对沙箱/不透明来源写 null，它不是一个可比较的 origin
+        [InlineData("null")]
+        [InlineData("not a url")]
+        public async Task LookAlikeOriginsAreRejected(string origin)
+        {
+            using (var server = new McpTestServer())
+            {
+                var response = await server.PostRawAsync(
+                    McpTestServer.LegacyRequest(1, "ping").ToJson(),
+                    request => request.Headers.TryAddWithoutValidation("Origin", origin));
+
+                Assert.Equal(403, response.Status);
+            }
+        }
+
+        [Theory]
+        // 允许项写的是 http://localhost（无端口），本机开发服务器的端口天天在变
+        [InlineData("http://localhost:3000")]
+        [InlineData("http://localhost")]
+        // 大小写不敏感
+        [InlineData("https://CLAUDE.ai")]
+        public async Task EquivalentOriginsPass(string origin)
+        {
+            using (var server = new McpTestServer())
+            {
+                var response = await server.PostRawAsync(
+                    McpTestServer.LegacyRequest(1, "ping").ToJson(),
+                    request => request.Headers.TryAddWithoutValidation("Origin", origin));
+
+                Assert.Equal(200, response.Status);
+            }
+        }
+
         [Fact]
         public async Task AbsentOriginPassesBecauseNativeClientsDoNotSendIt()
         {

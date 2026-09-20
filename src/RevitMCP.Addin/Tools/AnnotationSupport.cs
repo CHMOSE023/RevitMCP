@@ -119,10 +119,40 @@ namespace RevitMCP.Addin.Tools
             return candidate;
         }
 
-        public static IndependentTag CreateTag(
+        /// <summary>
+        /// 给一个构件打标记。
+        ///
+        /// **房间、空间、面积不走 <see cref="IndependentTag"/>。** 它们是 SpatialElement，
+        /// Revit 为它们准备的是各自专用的入口（NewRoomTag / NewSpaceTag / NewAreaTag）；
+        /// 拿 <c>IndependentTag.Create</c> 去标房间，无论项目里有没有载入房间标记族，
+        /// 都只会得到一句 "There is no loaded tag type that can be used when tagging
+        /// referenceToTag with tagMode"。那句话把人引向"去载入族"，
+        /// 而真正的原因是这条 API 路径对房间根本不适用——实测：项目里有 6 个房间标记类型、
+        /// 显式指定 typeId，报错一字不变。
+        /// </summary>
+        public static Element CreateTag(
             Document document, View view, Element target, XYZ position,
             bool addLeader, TagOrientation orientation, int index)
         {
+            var category = CategoryOf(target);
+
+            switch (category)
+            {
+                case BuiltInCategory.OST_Rooms:
+                    return CreateSpatialTag(document, view, target, position, addLeader, orientation, index,
+                        "房间", () => document.Create.NewRoomTag(
+                            new LinkElementId(target.Id), ToUv(position), view.Id));
+
+                case BuiltInCategory.OST_MEPSpaces:
+                    return CreateSpatialTag(document, view, target, position, addLeader, orientation, index,
+                        "空间", () => document.Create.NewSpaceTag(
+                            (Autodesk.Revit.DB.Mechanical.Space)target, ToUv(position), view));
+
+                case BuiltInCategory.OST_Areas:
+                    return CreateSpatialTag(document, view, target, position, addLeader, orientation, index,
+                        "面积", () => CreateAreaTag(document, view, target, position, index));
+            }
+
             try
             {
                 var tag = IndependentTag.Create(
@@ -140,10 +170,162 @@ namespace RevitMCP.Addin.Tools
             {
                 throw AnnotationFail.At(index, McpDomainError.TransactionFailed,
                     "Revit 拒绝给构件 " + target.Id.ToProtocolString() + "（" +
-                    (target.Category?.Name ?? "未知类别") + "）创建标记：" + ex.Message +
-                    "。最常见的原因是项目里没有载入这个类别的标记族——" +
-                    "用 revit_list_families 确认，没有的话需要用户先在 Revit 里载入。");
+                    (target.Category?.Name ?? "未知类别") + "）创建标记：" + ex.Message + "。" +
+                    DiagnoseTagFailure(document, target));
             }
+        }
+
+        /// <summary>
+        /// 房间/空间/面积标记。这三种的创建入口不同，但失败之后要说的话是一样的，
+        /// 所以只在 <paramref name="create"/> 这一处分叉。
+        /// </summary>
+        private static Element CreateSpatialTag(
+            Document document, View view, Element target, XYZ position,
+            bool addLeader, TagOrientation orientation, int index, string what, Func<Element> create)
+        {
+            Element tag;
+            try
+            {
+                tag = create();
+            }
+            catch (ToolFailureException) { throw; }
+            catch (Exception ex)
+            {
+                throw AnnotationFail.At(index, McpDomainError.TransactionFailed,
+                    "Revit 拒绝给" + what + " " + target.Id.ToProtocolString() + " 在视图「" +
+                    SafeName(view) + "」里创建标记：" + ex.Message + "。" +
+                    DiagnoseTagFailure(document, target) +
+                    what + "标记只能放在平面或剖面这类能看到" + what + "的视图里。");
+            }
+
+            if (tag == null)
+                throw AnnotationFail.At(index, McpDomainError.TransactionFailed,
+                    "Revit 未能给" + what + " " + target.Id.ToProtocolString() + " 创建标记，但也没有报错。");
+
+            ApplySpatialTagOptions(tag, addLeader, orientation);
+            return tag;
+        }
+
+        private static Element CreateAreaTag(
+            Document document, View view, Element target, XYZ position, int index)
+        {
+            var plan = view as ViewPlan;
+            if (plan == null)
+                throw AnnotationFail.At(index, McpDomainError.InvalidParameter,
+                    "面积标记只能放在面积平面里，视图「" + SafeName(view) + "」不是平面视图。");
+
+            return document.Create.NewAreaTag(plan, (Area)target, ToUv(position));
+        }
+
+        /// <summary>
+        /// 引线与方向。这三种标记的这两个属性不在同一个基类上，
+        /// 设不上也不值得让整批回滚——标记已经在正确的位置上了。
+        /// </summary>
+        private static void ApplySpatialTagOptions(Element tag, bool addLeader, TagOrientation orientation)
+        {
+            // 房间/空间/面积标记用的是另一个方向枚举（SpatialElementTagOrientation），
+            // 取值与 TagOrientation 一一对应，但类型不通用
+            var spatialOrientation = orientation == TagOrientation.Vertical
+                ? SpatialElementTagOrientation.Vertical
+                : SpatialElementTagOrientation.Horizontal;
+
+            var roomTag = tag as Autodesk.Revit.DB.Architecture.RoomTag;
+            if (roomTag != null)
+            {
+                try { roomTag.HasLeader = addLeader; } catch { }
+                try { roomTag.TagOrientation = spatialOrientation; } catch { }
+                return;
+            }
+
+            var spaceTag = tag as Autodesk.Revit.DB.Mechanical.SpaceTag;
+            if (spaceTag != null)
+            {
+                try { spaceTag.HasLeader = addLeader; } catch { }
+                try { spaceTag.TagOrientation = spatialOrientation; } catch { }
+                return;
+            }
+
+            var areaTag = tag as AreaTag;
+            if (areaTag != null)
+            {
+                try { areaTag.HasLeader = addLeader; } catch { }
+                try { areaTag.TagOrientation = spatialOrientation; } catch { }
+            }
+        }
+
+        /// <summary>
+        /// 标记建不出来时，把"到底缺什么"查清楚再说。
+        ///
+        /// 原先无论什么原因都统一归到"没载入标记族"，而那只是三种原因之一——
+        /// 指着错误方向的提示会让调用方（和人）在错误的地方反复尝试。
+        /// </summary>
+        private static string DiagnoseTagFailure(Document document, Element target)
+        {
+            var tagCategory = TagCategoryFor(CategoryOf(target));
+            if (tagCategory == null)
+                return "这个类别可能没有对应的标记族类别，Revit 不支持给它打标记。";
+
+            int loaded;
+            try
+            {
+                loaded = new FilteredElementCollector(document)
+                    .OfCategory(tagCategory.Value)
+                    .WhereElementIsElementType()
+                    .GetElementCount();
+            }
+            catch { loaded = -1; }
+
+            if (loaded == 0)
+                return "项目里没有载入 " + tagCategory.Value + " 类别的标记族，需要用户先在 Revit 里载入。";
+
+            if (loaded > 0)
+                return "项目里已经载入了 " + loaded + " 个 " + tagCategory.Value +
+                       " 标记类型，所以**不是缺族**——多半是视图类型不合适，或这个构件在该视图里不可见。";
+
+            return "用 revit_list_types 查对应的标记类别，确认标记族在不在项目里。";
+        }
+
+        /// <summary>构件类别 → 它的标记类别。没有对应关系时返回 null。</summary>
+        private static BuiltInCategory? TagCategoryFor(BuiltInCategory category)
+        {
+            switch (category)
+            {
+                case BuiltInCategory.OST_Rooms: return BuiltInCategory.OST_RoomTags;
+                case BuiltInCategory.OST_Areas: return BuiltInCategory.OST_AreaTags;
+                case BuiltInCategory.OST_MEPSpaces: return BuiltInCategory.OST_MEPSpaceTags;
+                case BuiltInCategory.OST_Doors: return BuiltInCategory.OST_DoorTags;
+                case BuiltInCategory.OST_Windows: return BuiltInCategory.OST_WindowTags;
+                case BuiltInCategory.OST_Walls: return BuiltInCategory.OST_WallTags;
+                case BuiltInCategory.OST_Floors: return BuiltInCategory.OST_FloorTags;
+                case BuiltInCategory.OST_Roofs: return BuiltInCategory.OST_RoofTags;
+                case BuiltInCategory.OST_Ceilings: return BuiltInCategory.OST_CeilingTags;
+                case BuiltInCategory.OST_StructuralColumns: return BuiltInCategory.OST_StructuralColumnTags;
+                case BuiltInCategory.OST_StructuralFraming: return BuiltInCategory.OST_StructuralFramingTags;
+                case BuiltInCategory.OST_StructuralFoundation: return BuiltInCategory.OST_StructuralFoundationTags;
+                case BuiltInCategory.OST_Columns: return BuiltInCategory.OST_GenericModelTags;
+                case BuiltInCategory.OST_Furniture: return BuiltInCategory.OST_FurnitureTags;
+                case BuiltInCategory.OST_GenericModel: return BuiltInCategory.OST_GenericModelTags;
+                case BuiltInCategory.OST_Stairs: return BuiltInCategory.OST_StairsTags;
+                case BuiltInCategory.OST_CurtainWallPanels: return BuiltInCategory.OST_CurtainWallPanelTags;
+                default: return null;
+            }
+        }
+
+        public static BuiltInCategory CategoryOf(Element element)
+        {
+            try
+            {
+                var category = element?.Category;
+                if (category == null) return BuiltInCategory.INVALID;
+
+                return (BuiltInCategory)category.Id.GetValue();
+            }
+            catch { return BuiltInCategory.INVALID; }
+        }
+
+        private static UV ToUv(XYZ point)
+        {
+            return new UV(point.X, point.Y);
         }
 
         /// <summary>
@@ -285,7 +467,13 @@ namespace RevitMCP.Addin.Tools
             return curves;
         }
 
-        /// <summary>这个视图里已经被标记过的构件。</summary>
+        /// <summary>
+        /// 这个视图里已经被标记过的构件。
+        ///
+        /// 必须同时数 <see cref="IndependentTag"/> 和 SpatialElementTag（房间/空间/面积标记）：
+        /// 只数前者的话，"跳过已标记的"对房间永远不生效——
+        /// 第二次调用会给每个房间再加一个标记，两个叠在一起看不出来。
+        /// </summary>
         public static HashSet<long> AlreadyTaggedIn(Document document, View view)
         {
             var tagged = new HashSet<long>();
@@ -300,7 +488,34 @@ namespace RevitMCP.Addin.Tools
                 }
             }
 
+            foreach (var tag in new FilteredElementCollector(document, view.Id)
+                         .OfClass(typeof(SpatialElementTag))
+                         .OfType<SpatialElementTag>())
+            {
+                var id = TaggedSpatialElementId(tag);
+                if (id != null && id != ElementId.InvalidElementId) tagged.Add(id.GetValue());
+            }
+
             return tagged;
+        }
+
+        /// <summary>房间/空间/面积标记指向谁。三个子类的属性名不同，没有共同的入口。</summary>
+        private static ElementId TaggedSpatialElementId(SpatialElementTag tag)
+        {
+            try
+            {
+                var roomTag = tag as Autodesk.Revit.DB.Architecture.RoomTag;
+                if (roomTag != null) return roomTag.Room?.Id;
+
+                var spaceTag = tag as Autodesk.Revit.DB.Mechanical.SpaceTag;
+                if (spaceTag != null) return spaceTag.Space?.Id;
+
+                var areaTag = tag as AreaTag;
+                if (areaTag != null) return areaTag.Area?.Id;
+            }
+            catch { /* 标记指向的东西被删了，当作没标 */ }
+
+            return null;
         }
 
         /// <summary>

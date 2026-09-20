@@ -25,6 +25,15 @@ namespace RevitMCP.Addin.Tools
         [McpParam("要编辑的族 ID，来自 revit_list_families。action 为 editFamily 时必填")]
         public string FamilyId { get; set; }
 
+        [McpParam("action 为 new 时，新项目要存到哪个**完整路径**（.rvt，目录必须已存在）。" +
+                  "**想在新项目里建模就必须给它**：Revit 的 API 建出来的新文档没有文件、" +
+                  "也就没法切成活动文档，而所有写工具只作用于活动文档。" +
+                  "给了它，工具会「新建 → 另存 → 激活 → 核对身份」一步到位，返回可以直接写入的文档。")]
+        public string SavePath { get; set; }
+
+        [McpParam("savePath 指向的文件已存在时是否覆盖，默认 false（存在即失败）")]
+        public bool? Overwrite { get; set; }
+
         [McpParam("是否把新打开的文档切成活动文档（用户屏幕会跟着变），默认 true。" +
                   "只是想读一读别的模型的话设 false，不打断用户正在做的事")]
         public bool? Activate { get; set; }
@@ -53,6 +62,11 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("是否已切成活动文档")]
         public bool Activated { get; set; }
+
+        [McpParam("新建流程实际走完了哪几步：created（建出文档）、saved（已落盘）、" +
+                  "activated（已切成活动文档）。**没有 activated 就不能往里写东西**——" +
+                  "写工具只作用于活动文档")]
+        public List<string> Stages { get; set; }
     }
 
     /// <summary>
@@ -69,6 +83,8 @@ namespace RevitMCP.Addin.Tools
         Description = "在当前 Revit 实例里打开一个已有文件、从样板新建一个项目，或打开某个族来编辑。" +
                       "打开后用返回的 documentId 去查它——多数只读工具都接受 documentId 参数。" +
                       "**写操作只作用于活动文档**，所以要改新打开的模型，activate 必须为 true。" +
+                      "**action: \"new\" 要建模就必须给 savePath**：Revit 建出来的新文档没有文件、" +
+                      "也就不能成为活动文档，给了 savePath 工具才会把「新建 → 另存 → 激活 → 核对」走完。" +
                       "工作共享模型建议带 detach: true 打开，避免意外占用中心文件的编辑权。",
         WithoutTransaction = true,
         TimeoutSeconds = 600)]
@@ -91,8 +107,7 @@ namespace RevitMCP.Addin.Tools
                     return OpenExisting(application, input, context, activate);
 
                 case "new":
-                    document = CreateNew(application, input);
-                    break;
+                    return CreateNewProject(application, input, context, activate);
 
                 case "editfamily":
                     document = EditFamily(application, input);
@@ -106,7 +121,7 @@ namespace RevitMCP.Addin.Tools
 
             return Describe(document, activated: false, context: context,
                 note: activate
-                    ? "新建与编辑族得到的文档尚未保存，没有路径，Revit 无法把它切成活动文档。" +
+                    ? "编辑族得到的文档尚未保存，没有路径，Revit 无法把它切成活动文档。" +
                       "先在 Revit 里保存它，或直接用返回的 documentId 做只读查询。"
                     : null);
         }
@@ -178,6 +193,111 @@ namespace RevitMCP.Addin.Tools
             };
 
             return application.Application.OpenDocumentFile(modelPath, options);
+        }
+
+        /// <summary>
+        /// 从样板新建项目。
+        ///
+        /// **光有 <c>NewProjectDocument</c> 是不够的。** 它返回的是一个只存在于数据库里的文档：
+        /// 没有文件、没有 UIDocument，因此 Revit 不可能把它切成活动文档；
+        /// 而所有写工具都只作用于活动文档。于是"新建成功"之后紧跟着的那一步
+        /// <c>revit_save_document_as</c>，存的是**上一个**还活着的项目——
+        /// 一个用户根本没打算动的模型，被复制成了新项目的名字，随后还被当成新项目继续建模。
+        ///
+        /// 所以给了 savePath 就把整条路走完：新建 → 另存 → 关掉数据库文档 → 打开并激活 → 核对身份。
+        /// 每一步都记进 stages，哪一步没走到，调用方看得见。
+        /// </summary>
+        private static OpenDocumentOutput CreateNewProject(
+            UIApplication application, OpenDocumentInput input,
+            ToolExecutionContext<UIApplication> context, bool activate)
+        {
+            var stages = new List<string>();
+
+            // 路径先验：文件已存在却没给 overwrite，那就别白建一个文档再报错
+            string target = null;
+            if (!string.IsNullOrWhiteSpace(input.SavePath))
+            {
+                target = SaveDocumentAsTool.ResolveTarget(input.SavePath);
+
+                if (File.Exists(target) && input.Overwrite != true)
+                    throw new ToolFailureException(McpDomainError.InvalidParameter,
+                        "文件已存在：" + target + "。换个路径，或带上 overwrite: true 覆盖它。" +
+                        "（什么都还没建）");
+            }
+
+            var document = CreateNew(application, input);
+            stages.Add("created");
+
+            if (target == null)
+            {
+                return Describe(document, activated: false, context: context, stages: stages,
+                    note: "新建的文档还没有文件，Revit 无法把它切成活动文档，**因此写不了东西**——" +
+                          "写工具只作用于活动文档。要一个能直接建模的新项目，" +
+                          "请带上 savePath（完整的 .rvt 路径），工具会把新建、另存、激活一次做完。" +
+                          "现在这个文档只能用返回的 documentId 做只读查询。");
+            }
+
+            try
+            {
+                document.SaveAs(target, new SaveAsOptions { OverwriteExistingFile = input.Overwrite == true });
+                stages.Add("saved");
+            }
+            catch (Exception ex)
+            {
+                TryClose(document);
+                throw new ToolFailureException(McpDomainError.TransactionFailed,
+                    "新项目建出来了，但另存到 " + target + " 失败：" + ex.Message +
+                    "（那个临时文档已经关掉，磁盘上没有留下东西）");
+            }
+
+            if (!activate)
+            {
+                return Describe(document, activated: false, context: context, stages: stages,
+                    note: "activate 为 false，新项目已落盘但没有切成活动文档，现在还写不了。" +
+                          "要建模请用 revit_open_document 以 action: \"open\" 打开它。",
+                    savedPath: target);
+            }
+
+            // 数据库文档占着这个文件，必须先关掉再用 UI 打开它——
+            // 否则 Revit 会说"文件已被占用"
+            TryClose(document);
+
+            UIDocument opened;
+            try
+            {
+                opened = application.OpenAndActivateDocument(target);
+            }
+            catch (Exception ex)
+            {
+                throw new ToolFailureException(McpDomainError.TransactionFailed,
+                    "新项目已存到 " + target + "，但打开并激活它失败：" + ex.Message +
+                    "。文件是好的，用 revit_open_document 以 action: \"open\" 再试一次。");
+            }
+
+            var live = opened?.Document;
+            if (live == null)
+                throw new ToolFailureException(McpDomainError.TransactionFailed,
+                    "新项目已存到 " + target + "，但 Revit 没有返回打开后的文档。" +
+                    "用 revit_open_document 以 action: \"open\" 再试一次。");
+
+            stages.Add("activated");
+
+            // 核对身份：接下来所有写操作都作用在"活动文档"上，
+            // 这一步确认活动文档确实是刚建的这个，而不是别的什么
+            var activePath = SafePath(live);
+            if (!string.Equals(activePath, target, StringComparison.OrdinalIgnoreCase))
+                throw new ToolFailureException(McpDomainError.TransactionFailed,
+                    "新项目已存到 " + target + "，但激活之后的活动文档却是「" + (activePath ?? "未知") +
+                    "」。为避免写错文档，这里不继续——请用 revit_list_documents 核对当前状态。");
+
+            return Describe(live, activated: true, context: context, stages: stages, note: null,
+                savedPath: target);
+        }
+
+        private static void TryClose(Document document)
+        {
+            try { document?.Close(false); }
+            catch { /* 关不掉就让它留着，至少文件已经存下来了 */ }
         }
 
         private static Document CreateNew(UIApplication application, OpenDocumentInput input)
@@ -270,7 +390,8 @@ namespace RevitMCP.Addin.Tools
         }
 
         private static OpenDocumentOutput Describe(
-            Document document, bool activated, ToolExecutionContext<UIApplication> context, string note)
+            Document document, bool activated, ToolExecutionContext<UIApplication> context, string note,
+            List<string> stages = null, string savedPath = null)
         {
             if (document == null)
                 throw new ToolFailureException(McpDomainError.TransactionFailed,
@@ -282,8 +403,9 @@ namespace RevitMCP.Addin.Tools
             {
                 DocumentId = DocumentRef.KeyOf(document),
                 Title = SafeTitle(document),
-                Path = SafePath(document),
-                Activated = activated
+                Path = SafePath(document) ?? savedPath,
+                Activated = activated,
+                Stages = stages
             };
 
             try { output.IsFamily = document.IsFamilyDocument; } catch { }

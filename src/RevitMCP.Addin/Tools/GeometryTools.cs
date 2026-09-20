@@ -60,6 +60,11 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class GetGeometryInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档。" +
+                  "**跨文档检查走到「量一下几何」这一步时要用它**——" +
+                  "查构件、查参数都认这个参数，量几何这里不认的话，检查链就在这里断了")]
+        public string DocumentId { get; set; }
+
         [McpParam("要查询的构件 ID 列表。ElementId 与 uniqueId 两种写法都接受", Required = true)]
         public List<string> ElementIds { get; set; }
 
@@ -93,7 +98,7 @@ namespace RevitMCP.Addin.Tools
 
         public override GetGeometryOutput Execute(GetGeometryInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
 
             if (input.ElementIds == null || input.ElementIds.Count == 0)
                 throw new ToolFailureException(McpDomainError.InvalidParameter, "elementIds 不能为空。");

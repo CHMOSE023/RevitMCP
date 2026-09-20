@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -343,17 +344,20 @@ namespace RevitMCP.Addin.Tools
 
             output.Placed = output.Views.Count;
 
-            // 放完回头看一眼：视口在不在纸上。
-            // Viewport.Create 对纸外的坐标照收不误，图纸导出来却是空的——
-            // 每一步都"成功"，产物却没有内容
+            // 放完回头量一遍：视口的**整个外框**在不在纸上、彼此有没有压在一起。
+            // Viewport.Create 对纸外的坐标照收不误，图纸导出来却缺内容——
+            // 每一步都"成功"，产物却不能用
             foreach (var placed in output.Views)
             {
-                if (!IsOutside(placed.Box, sheetBox)) continue;
+                var overflow = DescribeOverflow(placed.Box, sheetBox);
+                if (overflow == null) continue;
 
                 context.Warnings.Add(
-                    "视口「" + placed.ViewName + "」落在了图纸范围之外，出图时看不到它。" +
-                    "显式给 position 重放一次，或先从图纸上删掉这个视口。");
+                    "视口「" + placed.ViewName + "」有部分超出图纸范围（" + overflow +
+                    "），出图时这部分看不到。显式给 position 重放一次，或把视图比例调小。");
             }
+
+            WarnOverlaps(output.Views, context);
 
             return output;
         }
@@ -458,8 +462,32 @@ namespace RevitMCP.Addin.Tools
                 ViewId = schedule.Id.ToProtocolString(),
                 ViewName = SafeName(schedule),
                 Position = position,
-                Box = null   // 明细表实例没有视口那样的 box，尺寸由表格内容决定
+                Box = ScheduleBoxOf(document, sheet, instance)
             };
+        }
+
+        /// <summary>
+        /// 明细表在图纸上的实际范围。
+        ///
+        /// 明细表实例没有 <c>GetBoxOutline</c>，尺寸由表格内容决定——但它有包围盒，
+        /// 只是要先 <c>Regenerate</c> 才算得出来。以前这里直接返回 null，
+        /// 于是明细表连"在不在纸上"的检查都绕过了：一张越界的明细表，回执里看不出任何异常。
+        /// </summary>
+        private static BoundingBoxInfo ScheduleBoxOf(
+            Document document, ViewSheet sheet, ScheduleSheetInstance instance)
+        {
+            try
+            {
+                document.Regenerate();
+
+                var box = instance.get_BoundingBox(sheet);
+                if (box?.Min == null || box.Max == null) return null;
+
+                return ToBox(
+                    Units.FromFeet(box.Min.X), Units.FromFeet(box.Min.Y),
+                    Units.FromFeet(box.Max.X), Units.FromFeet(box.Max.Y));
+            }
+            catch { return null; }
         }
 
         private static Point3D AutoPosition(ViewSheet sheet, int index, int total)
@@ -548,14 +576,64 @@ namespace RevitMCP.Addin.Tools
             };
         }
 
-        /// <summary>视口中心是否落在图纸范围之外。判断不了时一律当作没问题，不乱报警。</summary>
-        private static bool IsOutside(BoundingBoxInfo box, BoundingBoxInfo sheet)
+        /// <summary>
+        /// 视口越出图纸多少。判断不了时返回 null（不乱报警）。
+        ///
+        /// **量的是整个外框，不是中心点。** 只看中心点的话，一个比图纸还大的视口
+        /// 只要中心落在纸内就被判为"没问题"——实测放一张未裁剪的三维视图，
+        /// 右边越界 63 毫米、下边越界 31 毫米，中心点检查一声不吭。
+        /// </summary>
+        private static string DescribeOverflow(BoundingBoxInfo box, BoundingBoxInfo sheet)
         {
-            if (box?.Center == null || sheet?.Min == null || sheet.Max == null) return false;
+            if (box?.Min == null || box.Max == null || sheet?.Min == null || sheet.Max == null) return null;
 
-            return box.Center.X < sheet.Min.X || box.Center.X > sheet.Max.X
-                   || box.Center.Y < sheet.Min.Y || box.Center.Y > sheet.Max.Y;
+            var parts = new List<string>();
+
+            if (sheet.Min.X - box.Min.X > EdgeToleranceMm) parts.Add("左 " + Amount(sheet.Min.X - box.Min.X));
+            if (box.Max.X - sheet.Max.X > EdgeToleranceMm) parts.Add("右 " + Amount(box.Max.X - sheet.Max.X));
+            if (sheet.Min.Y - box.Min.Y > EdgeToleranceMm) parts.Add("下 " + Amount(sheet.Min.Y - box.Min.Y));
+            if (box.Max.Y - sheet.Max.Y > EdgeToleranceMm) parts.Add("上 " + Amount(box.Max.Y - sheet.Max.Y));
+
+            return parts.Count == 0 ? null : string.Join("、", parts);
         }
+
+        /// <summary>
+        /// 两两之间压没压上。
+        ///
+        /// 这里只报视口之间的重叠，不报"压住标题栏"——标题栏族的包围盒通常就是整张图纸，
+        /// 拿它当禁区会把每一个视口都判成违规。真要管标题栏，需要一份可配置的图面布局区，
+        /// 那是另一件事，不能靠猜。
+        /// </summary>
+        private static void WarnOverlaps(List<PlacedView> views, ToolExecutionContext<UIApplication> context)
+        {
+            for (var i = 0; i < views.Count; i++)
+            {
+                for (var j = i + 1; j < views.Count; j++)
+                {
+                    if (!Overlaps(views[i].Box, views[j].Box)) continue;
+
+                    context.Warnings.Add(
+                        "视口「" + views[i].ViewName + "」和「" + views[j].ViewName +
+                        "」在图纸上互相重叠，打印出来会压在一起。");
+                }
+            }
+        }
+
+        private static bool Overlaps(BoundingBoxInfo a, BoundingBoxInfo b)
+        {
+            if (a?.Min == null || a.Max == null || b?.Min == null || b.Max == null) return false;
+
+            return a.Min.X < b.Max.X - EdgeToleranceMm && b.Min.X < a.Max.X - EdgeToleranceMm &&
+                   a.Min.Y < b.Max.Y - EdgeToleranceMm && b.Min.Y < a.Max.Y - EdgeToleranceMm;
+        }
+
+        private static string Amount(double millimeters)
+        {
+            return Units.Round(millimeters).ToString("0.#", CultureInfo.InvariantCulture) + " 毫米";
+        }
+
+        /// <summary>图面上 1 毫米以内的出入不值得报警：视口外框自带标题与边线，本来就不是精确到丝的东西。</summary>
+        private const double EdgeToleranceMm = 1.0;
 
         private static string SafeNumber(ViewSheet sheet)
         {

@@ -35,11 +35,12 @@ namespace RevitMCP.Addin.Tools
                   "重名时工具会自动加后缀并通过 warnings 告知")]
         public string Name { get; set; }
 
-        [McpParam("标高 ID，来自 revit_list_levels。floorPlan 与 ceilingPlan 必填")]
+        [McpParam("标高 ID，来自 revit_list_levels。floorPlan 与 ceilingPlan 必填；" +
+                  "elevation 用它决定立面标记画在哪张平面上（省略则用活动平面或任意一张楼层平面）")]
         public string LevelId { get; set; }
 
         [McpParam("剖切线，毫米。section 必填：从 p0 看向 p1，视线方向为沿线前进方向右手边。" +
-                  "elevation 用它的 p0 作为立面位置、p0→p1 作为视线方向")]
+                  "**elevation 不一样**：p0 是立面标记的位置，p0→p1 就是看过去的方向本身")]
         public LocationLine SectionLine { get; set; }
 
         [McpParam("剖面的上下范围，毫米。section 用，默认 [-1000, 10000]（相对项目零点）")]
@@ -60,7 +61,7 @@ namespace RevitMCP.Addin.Tools
         [McpParam("要套用的视图样板 ID，来自 revit_list_view_templates。省略则不套")]
         public string TemplateId { get; set; }
 
-        [McpParam("视图族类型 ID。省略则自动挑该视图类型的第一个可用族类型。" +
+        [McpParam("视图族类型 ID，来自 revit_list_view_family_types。省略则自动挑该视图类型的第一个可用族类型。" +
                   "项目里有多套视图族类型（如「建筑平面」「结构平面」）时才需要显式指定")]
         public string ViewFamilyTypeId { get; set; }
     }
@@ -127,6 +128,15 @@ namespace RevitMCP.Addin.Tools
         private const double DefaultTopMm = 10000.0;
         private const double DefaultDepthMm = 10000.0;
 
+        /// <summary>立面标记没给比例时用 1:100。标记的比例只影响它在平面上画多大。</summary>
+        private const int DefaultElevationScale = 100;
+
+        /// <summary>VIEWER_BOUND_FAR_CLIPPING 的「裁剪但不显示裁剪线」。</summary>
+        private const int FarClipWithoutLine = 2;
+
+        /// <summary>两个单位向量同向的判据。cos 5° ≈ 0.996，四个槽位相差 90°，这个阈值分得很开。</summary>
+        private const double DirectionTolerance = 0.996;
+
         public override CreateViewsOutput Execute(
             CreateViewsInput input, ToolExecutionContext<UIApplication> context)
         {
@@ -173,7 +183,7 @@ namespace RevitMCP.Addin.Tools
                     break;
 
                 case "elevation":
-                    view = CreateSection(document, context, spec, index, ViewFamily.Elevation);
+                    view = CreateElevation(document, context, spec, index);
                     break;
 
                 case "threed":
@@ -231,8 +241,13 @@ namespace RevitMCP.Addin.Tools
         }
 
         /// <summary>
-        /// 剖面与立面。两者在 API 里是同一个入口（<c>ViewSection.CreateSection</c>），
-        /// 只是视图族类型不同。
+        /// 剖面。
+        ///
+        /// **立面不走这里**：<c>ViewSection.CreateSection</c> 只接受 Section 的视图族类型，
+        /// 传 Elevation 的类型进去，Revit 回一句
+        /// "The ViewFamilyType must be a Section ViewFamily"——任何参数组合都建不出立面。
+        /// 立面在 Revit 里是"平面上的一个立面标记 + 挂在它四个方向之一上的视图"，
+        /// 见 <see cref="CreateElevation"/>。
         /// </summary>
         private static View CreateSection(
             Document document, ToolExecutionContext<UIApplication> context,
@@ -257,6 +272,230 @@ namespace RevitMCP.Addin.Tools
                 throw ViewFail.At(index, McpDomainError.TransactionFailed,
                     "Revit 拒绝创建" + Label(family) + "：" + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// 立面。
+        ///
+        /// Revit 里的立面不是"另一种剖面"：它必须挂在一个**立面标记**上，
+        /// 而标记是画在某张平面视图里的（<c>ElevationMarker.CreateElevation</c> 要 planViewId）。
+        /// 一个标记有四个方向槽位，槽位号与"朝哪看"的对应关系 API 没有承诺，
+        /// 各版本也不保证一致——所以这里不猜：建出来读 <c>ViewDirection</c> 核对，
+        /// 不是要的那个方向就删掉换下一个槽位。四个槽位试完仍不匹配才报错。
+        ///
+        /// 约定与剖面一致地"照着线走"：sectionLine.p0 是标记位置，p0→p1 是视线方向。
+        /// </summary>
+        private static View CreateElevation(
+            Document document, ToolExecutionContext<UIApplication> context, ViewSpec spec, int index)
+        {
+            if (spec.SectionLine == null)
+                throw ViewFail.At(index, McpDomainError.InvalidParameter,
+                    "创建立面必须给 sectionLine：p0 是立面标记的位置，p0→p1 是看过去的方向（毫米）。");
+
+            CreateSupport.RequireLine(spec.SectionLine, index);
+
+            var familyType = ResolveViewFamilyType(document, spec.ViewFamilyTypeId, ViewFamily.Elevation, index);
+            var plan = ResolveHostPlan(document, context, spec, index);
+
+            var p0 = spec.SectionLine.P0.ToXyz();
+            var p1 = spec.SectionLine.P1.ToXyz();
+
+            var wanted = new XYZ(p1.X - p0.X, p1.Y - p0.Y, 0);
+            if (wanted.GetLength() < 1e-9)
+                throw ViewFail.At(index, McpDomainError.InvalidParameter,
+                    "sectionLine 的两点在平面上重合，定不出立面的视线方向。");
+            wanted = wanted.Normalize();
+
+            var scale = spec.Scale.HasValue && spec.Scale.Value > 0 ? spec.Scale.Value : SafeScale(plan);
+            var origin = new XYZ(p0.X, p0.Y, plan.GenLevel != null ? plan.GenLevel.Elevation : p0.Z);
+
+            ElevationMarker marker;
+            try
+            {
+                marker = ElevationMarker.CreateElevationMarker(document, familyType.Id, origin, scale);
+            }
+            catch (Exception ex)
+            {
+                throw ViewFail.At(index, McpDomainError.TransactionFailed,
+                    "Revit 拒绝创建立面标记：" + ex.Message);
+            }
+
+            var elevation = PickElevationSlot(document, marker, plan, wanted, index);
+
+            ApplyElevationExtent(elevation, spec, context, index);
+            return elevation;
+        }
+
+        /// <summary>四个槽位里挑出朝向对的那个，其余不留在模型里。</summary>
+        private static ViewSection PickElevationSlot(
+            Document document, ElevationMarker marker, ViewPlan plan, XYZ wanted, int index)
+        {
+            var attempts = new List<string>();
+
+            for (var slot = 0; slot < 4; slot++)
+            {
+                ViewSection candidate;
+                try
+                {
+                    candidate = marker.CreateElevation(document, plan.Id, slot);
+                }
+                catch (Exception ex)
+                {
+                    attempts.Add(slot + "：" + ex.Message);
+                    continue;
+                }
+
+                if (candidate == null)
+                {
+                    attempts.Add(slot + "：Revit 没有返回视图");
+                    continue;
+                }
+
+                XYZ direction;
+                try { direction = candidate.ViewDirection; }
+                catch { direction = null; }
+
+                if (direction != null && direction.Normalize().DotProduct(wanted) > DirectionTolerance)
+                    return candidate;
+
+                attempts.Add(slot + "：朝向 " + Describe(direction));
+                Discard(document, candidate.Id);
+            }
+
+            Discard(document, marker.Id);
+
+            throw ViewFail.At(index, McpDomainError.TransactionFailed,
+                "立面标记的四个方向都不是请求的 " + Describe(wanted) + "：" + string.Join("；", attempts) +
+                "。请检查 sectionLine 的方向是不是水平的。");
+        }
+
+        /// <summary>立面的竖向范围与可见深度。只有调用方明确给了才动，免得把 Revit 的默认裁剪改坏。</summary>
+        private static void ApplyElevationExtent(
+            View elevation, ViewSpec spec, ToolExecutionContext<UIApplication> context, int index)
+        {
+            if (spec.DepthMm.HasValue)
+            {
+                if (spec.DepthMm.Value < Units.MinLength)
+                    throw ViewFail.At(index, McpDomainError.InvalidParameter,
+                        "depthMm (" + Format(spec.DepthMm.Value) + ") 太小，视图里什么都看不到。");
+
+                TrySetInt(elevation, BuiltInParameter.VIEWER_BOUND_FAR_CLIPPING, FarClipWithoutLine);
+                if (!TrySetLength(elevation, BuiltInParameter.VIEWER_BOUND_OFFSET_FAR, spec.DepthMm.Value))
+                    context.Warnings.Add(
+                        "views[" + index + "]：立面的远裁剪深度没能设成 " + Format(spec.DepthMm.Value) +
+                        " 毫米，用的是 Revit 的默认值。");
+            }
+
+            if (!spec.BottomMm.HasValue && !spec.TopMm.HasValue) return;
+
+            var bottomMm = spec.BottomMm ?? DefaultBottomMm;
+            var topMm = spec.TopMm ?? DefaultTopMm;
+
+            if (topMm <= bottomMm)
+                throw ViewFail.At(index, McpDomainError.InvalidParameter,
+                    "topMm (" + Format(topMm) + ") 必须大于 bottomMm (" + Format(bottomMm) + ")。");
+
+            try
+            {
+                var box = elevation.CropBox;
+                var originZmm = Units.FromFeet(box.Transform.Origin.Z);
+
+                box.Min = new XYZ(box.Min.X, Units.ToFeet(bottomMm - originZmm), box.Min.Z);
+                box.Max = new XYZ(box.Max.X, Units.ToFeet(topMm - originZmm), box.Max.Z);
+
+                elevation.CropBox = box;
+                elevation.CropBoxActive = true;
+            }
+            catch (Exception ex)
+            {
+                context.Warnings.Add(
+                    "views[" + index + "]：立面的上下范围没能设成 [" + Format(bottomMm) + ", " +
+                    Format(topMm) + "]：" + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// 立面标记画在哪张平面上。
+        ///
+        /// 这不是可有可无的参数：Revit 的立面**必须**落在某张平面视图里，
+        /// 换一张平面就是另一个立面标记。给了 levelId 就用那条标高的平面，
+        /// 否则退到活动视图，再退到项目里任意一张楼层平面——并且把选了哪张说出来。
+        /// </summary>
+        private static ViewPlan ResolveHostPlan(
+            Document document, ToolExecutionContext<UIApplication> context, ViewSpec spec, int index)
+        {
+            var plans = new FilteredElementCollector(document)
+                .OfClass(typeof(ViewPlan))
+                .Cast<ViewPlan>()
+                .Where(plan => !plan.IsTemplate && plan.ViewType == Autodesk.Revit.DB.ViewType.FloorPlan)
+                .ToList();
+
+            if (!string.IsNullOrWhiteSpace(spec.LevelId))
+            {
+                var level = CreateSupport.ResolveLevel(document, context, spec.LevelId, index);
+                var onLevel = plans.FirstOrDefault(plan => plan.GenLevel != null && plan.GenLevel.Id == level.Id);
+
+                if (onLevel == null)
+                    throw ViewFail.At(index, McpDomainError.InvalidParameter,
+                        "标高「" + CreateSupport.SafeName(level) + "」上没有楼层平面视图，" +
+                        "立面标记无处安放。先用 revit_create_views 建一张该标高的 floorPlan，" +
+                        "或者不给 levelId 让工具挑一张现成的平面。");
+
+                return onLevel;
+            }
+
+            var active = document.ActiveView as ViewPlan;
+            if (active != null && !active.IsTemplate) return active;
+
+            var fallback = plans.FirstOrDefault();
+            if (fallback == null)
+                throw ViewFail.At(index, McpDomainError.InvalidParameter,
+                    "项目里没有任何楼层平面视图，立面标记无处安放。先建一张 floorPlan。");
+
+            CreateSupport.Once(context,
+                "未指定 levelId，立面标记画在平面「" + SafeName(fallback) + "」上。" +
+                "立面属于它所在的那张平面，换一张平面就是另一个立面。");
+
+            return fallback;
+        }
+
+        private static void Discard(Document document, ElementId id)
+        {
+            try { document.Delete(id); }
+            catch { /* 已经跟着别的构件删掉了 */ }
+        }
+
+        private static string Describe(XYZ direction)
+        {
+            if (direction == null) return "未知";
+
+            return "(" + Format(direction.X) + ", " + Format(direction.Y) + ")";
+        }
+
+        private static int SafeScale(View view)
+        {
+            try { return view.Scale > 0 ? view.Scale : DefaultElevationScale; }
+            catch { return DefaultElevationScale; }
+        }
+
+        private static bool TrySetLength(Element element, BuiltInParameter id, double valueMm)
+        {
+            try
+            {
+                var parameter = element.get_Parameter(id);
+                return parameter != null && !parameter.IsReadOnly && parameter.Set(Units.ToFeet(valueMm));
+            }
+            catch { return false; }
+        }
+
+        private static bool TrySetInt(Element element, BuiltInParameter id, int value)
+        {
+            try
+            {
+                var parameter = element.get_Parameter(id);
+                return parameter != null && !parameter.IsReadOnly && parameter.Set(value);
+            }
+            catch { return false; }
         }
 
         /// <summary>

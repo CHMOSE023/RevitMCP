@@ -12,11 +12,18 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ListSchedulableFieldsInput
     {
+        [McpParam("要查询的文档 ID，来自 revit_list_documents。省略则用当前活动文档")]
+        public string DocumentId { get; set; }
+
         [McpParam("BuiltInCategory 名，如 OST_Doors、OST_Rooms。可省略 OST_ 前缀", Required = true)]
         public string Category { get; set; }
 
         [McpParam("按字段名过滤（不区分大小写的子串匹配）")]
         public string NameContains { get; set; }
+
+        [McpParam("最多返回多少条，默认 200，上限 1000。" +
+                  "墙这类类别的可选字段有上百个，全量返回会把回执撑得很大")]
+        public int? Limit { get; set; }
     }
 
     public sealed class SchedulableFieldInfo
@@ -37,8 +44,14 @@ namespace RevitMCP.Addin.Tools
         [McpParam("类别")]
         public string Category { get; set; }
 
-        [McpParam("可用字段数")]
+        [McpParam("可用字段数（过滤后的总数，不受 limit 影响）")]
         public int Total { get; set; }
+
+        [McpParam("本次返回了多少条")]
+        public int Returned { get; set; }
+
+        [McpParam("是否因为 limit 而截断。为 true 时请加 nameContains 缩小范围")]
+        public bool Truncated { get; set; }
 
         [McpParam("可用字段，按名称排列")]
         public List<SchedulableFieldInfo> Fields { get; set; } = new List<SchedulableFieldInfo>();
@@ -54,20 +67,34 @@ namespace RevitMCP.Addin.Tools
     public sealed class ListSchedulableFieldsTool
         : RevitTool<ListSchedulableFieldsInput, ListSchedulableFieldsOutput>
     {
+        private const int DefaultLimit = 200;
+        private const int MaxLimit = 1000;
+
         public override ListSchedulableFieldsOutput Execute(
             ListSchedulableFieldsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
             var category = ParseCategory(input.Category);
 
             var fields = ScheduleSupport.ProbeFields(document, category, input.NameContains);
+
+            var limit = Math.Max(1, Math.Min(input.Limit ?? DefaultLimit, MaxLimit));
+            var truncated = fields.Count > limit;
 
             var output = new ListSchedulableFieldsOutput
             {
                 Category = category.ToString(),
                 Total = fields.Count,
-                Fields = fields
+                Truncated = truncated,
+                Fields = truncated ? fields.GetRange(0, limit) : fields
             };
+
+            output.Returned = output.Fields.Count;
+
+            if (truncated)
+                context.Warnings.Add(
+                    category + " 共有 " + fields.Count + " 个可用字段，这里只返回了前 " + limit +
+                    " 个。用 nameContains 过滤，或调大 limit。");
 
             if (output.Total == 0)
                 context.Warnings.Add(

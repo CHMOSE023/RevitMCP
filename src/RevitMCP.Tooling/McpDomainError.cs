@@ -27,6 +27,15 @@ namespace RevitMCP.Tooling
         public const string ConfirmationRequired = "CONFIRMATION_REQUIRED";
         public const string ServerStopped = "SERVER_STOPPED";
 
+        /// <summary>
+        /// 调用方用 expectedDocumentId 点名了一个文档，而此刻的活动文档不是它。
+        ///
+        /// 单独成码而不是并入 INVALID_PARAMETER：参数没有写错，
+        /// 是**世界变了**——用户在 Revit 里切了文档、或上一步的另存换了当前文件。
+        /// 模型看到它应当去重新确认文档与构件 ID，而不是改参数重试。
+        /// </summary>
+        public const string WrongDocument = "WRONG_DOCUMENT";
+
         public static string Format(string code, string message) => code + ": " + message;
     }
 }

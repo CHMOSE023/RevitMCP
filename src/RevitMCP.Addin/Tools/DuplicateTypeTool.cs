@@ -9,13 +9,18 @@ using RevitMCP.Tooling;
 
 namespace RevitMCP.Addin.Tools
 {
-    public sealed class TypeParameterValue
+    public sealed class ParameterValueSpec
     {
         [McpParam("参数名，须与 revit_get_element_parameters 返回的名称完全一致", Required = true)]
         public string Name { get; set; }
 
         [McpParam("要写入的值，一律用字符串。数值按项目显示单位解释", Required = true)]
         public string Value { get; set; }
+
+        [McpParam("数值按哪种单位解释：projectUnits（默认，项目显示单位）、internal（Revit 内部单位：长度英尺、角度弧度）。" +
+                  "写不进去会报错，不会在两种单位之间回退猜测",
+                  AllowedValues = new[] { "projectUnits", "internal" })]
+        public string ValueMode { get; set; }
     }
 
     public sealed class DuplicateTypeInput
@@ -31,7 +36,7 @@ namespace RevitMCP.Addin.Tools
         public double? ThicknessMm { get; set; }
 
         [McpParam("要修改的其他类型参数")]
-        public List<TypeParameterValue> Parameters { get; set; }
+        public List<ParameterValueSpec> Parameters { get; set; }
     }
 
     public sealed class LayerInfo
@@ -331,7 +336,7 @@ namespace RevitMCP.Addin.Tools
         }
 
         private static void ApplyParameters(
-            ElementType type, List<TypeParameterValue> parameters, DuplicateTypeOutput output)
+            ElementType type, List<ParameterValueSpec> parameters, DuplicateTypeOutput output)
         {
             foreach (var entry in parameters)
             {
@@ -349,7 +354,7 @@ namespace RevitMCP.Addin.Tools
                         "参数「" + entry.Name + "」是只读的（厚度这类由层构造算出来的值就是只读的，" +
                         "请改用 thicknessMm）。新类型已创建，但这个参数没设上。");
 
-                ParameterWriter.Write(parameter, entry.Value, type);
+                ParameterWriter.Write(parameter, entry.Value, type, ParameterWriter.ParseInternalMode(entry.ValueMode));
                 output.Changed.Add(entry.Name + " → " + ParameterWriter.DisplayOf(parameter));
             }
         }

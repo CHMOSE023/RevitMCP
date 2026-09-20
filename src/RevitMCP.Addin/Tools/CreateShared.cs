@@ -65,6 +65,18 @@ namespace RevitMCP.Addin.Tools
         [McpParam("所在标高名")]
         public string Level { get; set; }
 
+        [McpParam("所在标高的高程，毫米")]
+        public double? LevelElevationMm { get; set; }
+
+        [McpParam("**写完读回来的**实际标高偏移，毫米。不是回显入参——" +
+                  "它来自构件上的参数，与请求不符时本次创建已经回滚，不会出现在回执里")]
+        public double? BaseOffsetMm { get; set; }
+
+        [McpParam("标高高程 + 实际偏移，毫米。**楼板与天花是顶面、屋顶与柱底是底面**——" +
+                  "Revit 的偏移参数在这几个类别上语义不同，这里照它本来的语义报。" +
+                  "拿它直接和图纸标高核对，不用再查一次参数")]
+        public double? ElevationMm { get; set; }
+
         [McpParam("长度，毫米。仅线定位构件有")]
         public double? LengthMm { get; set; }
 
@@ -388,9 +400,14 @@ namespace RevitMCP.Addin.Tools
         /// 为它把整批回滚，代价大于收益——但必须说出来，
         /// 否则用户调层高时会发现有几片墙没跟着动，而且不知道为什么。
         /// </summary>
+        /// <param name="topOffsetMm">
+        /// 顶部偏移。null 表示调用方没提，保持 Revit 自己的取值；
+        /// 明确给 0 与省略不同——前者要求顶面正好落在标高上，必须真的写进去并核对。
+        /// </param>
         public static void ApplyTopConstraint(
             Element element, BuiltInParameter levelParam, BuiltInParameter offsetParam,
-            Level topLevel, double topOffsetMm, ToolExecutionContext<UIApplication> context)
+            Level topLevel, double? topOffsetMm, ToolExecutionContext<UIApplication> context,
+            int index = -1)
         {
             if (!TrySet(element, levelParam, parameter => parameter.Set(topLevel.Id)))
             {
@@ -400,14 +417,65 @@ namespace RevitMCP.Addin.Tools
                 return;
             }
 
-            if (topOffsetMm != 0 &&
-                !TrySet(element, offsetParam, parameter => parameter.Set(Units.ToFeet(topOffsetMm))))
-            {
-                Once(context,
-                    "构件 " + element.Id.ToProtocolString() + " 的顶部偏移没能设成 " +
-                    Format(topOffsetMm) + " 毫米。");
-            }
+            if (!topOffsetMm.HasValue) return;
+
+            var actual = SetLengthVerified(element, offsetParam, topOffsetMm.Value, "顶部偏移", index);
+            if (actual.HasValue) return;
+
+            Once(context,
+                "构件 " + element.Id.ToProtocolString() + " 上没有顶部偏移参数，topOffset " +
+                Format(topOffsetMm.Value) + " 毫米没有写入。");
         }
+
+        /// <summary>
+        /// 写一个长度参数，**再读回来核对**。
+        ///
+        /// 竖向约束（标高偏移、窗台高度、柱顶偏移）不能"尽力而为"：
+        /// 位置错了的构件比建不出来的构件危险得多——它在模型里长得一模一样，
+        /// 标高参数也对，只有量几何才看得出来。所以写不进去、或者写完读回来对不上，
+        /// 都抛错让整批回滚，而不是留一条警告。
+        ///
+        /// 容差取 0.01 毫米：毫米与英尺之间来回换算必然有浮点尾巴，但真的写错至少差几十毫米。
+        /// </summary>
+        /// <returns>读回来的实际值（毫米）。参数在这个构件上不存在时返回 null。</returns>
+        public static double? SetLengthVerified(
+            Element element, BuiltInParameter id, double valueMm, string what, int index,
+            string field = "elements", string outcome = "整批未创建")
+        {
+            Parameter parameter;
+            try { parameter = element.get_Parameter(id); }
+            catch (Exception ex)
+            {
+                throw Failure(index, McpDomainError.TransactionFailed,
+                    "读不到构件 " + element.Id.ToProtocolString() + " 的" + what + "参数：" + ex.Message,
+                    field, outcome);
+            }
+
+            if (parameter == null) return null;
+
+            if (!parameter.IsReadOnly)
+            {
+                try { parameter.Set(Units.ToFeet(valueMm)); }
+                catch (Exception ex)
+                {
+                    throw Failure(index, McpDomainError.TransactionFailed,
+                        "构件 " + element.Id.ToProtocolString() + " 的" + what + "写不进去（目标 " +
+                        Format(valueMm) + " 毫米）：" + ex.Message, field, outcome);
+                }
+            }
+
+            var actualMm = Units.Round(Units.FromFeet(parameter.AsDouble()));
+            if (Math.Abs(actualMm - valueMm) > LengthToleranceMm)
+                throw Failure(index, McpDomainError.TransactionFailed,
+                    "构件 " + element.Id.ToProtocolString() + " 的" + what + "应为 " + Format(valueMm) +
+                    " 毫米，写完读回来却是 " + Format(actualMm) + " 毫米，相差 " +
+                    Format(actualMm - valueMm) + " 毫米。", field, outcome);
+
+            return actualMm;
+        }
+
+        /// <summary>竖向约束读回来比对的容差，毫米。</summary>
+        public const double LengthToleranceMm = 0.01;
 
         private static bool TrySet(Element element, BuiltInParameter id, Func<Parameter, bool> set)
         {

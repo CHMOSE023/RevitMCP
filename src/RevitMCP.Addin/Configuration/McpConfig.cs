@@ -31,6 +31,19 @@ namespace RevitMCP.Addin.Configuration
         /// 开启它应当是一个需要停下来想一想的动作。
         /// </summary>
         public bool EscapeHatchEnabled { get; set; } = false;
+        /// <summary>
+        /// 认不出来的 Revit 模态对话框，要不要也自动点「确定」。
+        ///
+        /// 默认 false：不认识的对话框一律取消，让这一步失败、事务回滚，
+        /// 并在回执里说清楚需要人来决定。数字上的"第一个按钮"在不同对话框上
+        /// 分别意味着确定、是、删除、覆盖——替用户点下去，等于把未知后果写进他的模型。
+        ///
+        /// 如果某个建模流程因此走不通（某个必经的对话框其实是安全的），
+        /// 可以临时打开它，同时把那个对话框的 DialogId 反馈进白名单，
+        /// 而不是长期让所有对话框都被自动确认。
+        /// </summary>
+        public bool AutoConfirmUnknownDialogs { get; set; } = false;
+
         public int MaxElementsPerWrite { get; set; } = 500;
         public int DefaultToolTimeoutSeconds { get; set; } = 60;
         public List<string> DisabledTools { get; set; } = new List<string>();
@@ -81,6 +94,7 @@ namespace RevitMCP.Addin.Configuration
                 config.Token = ReadString(root, "token", null);
                 config.WriteEnabled = ReadBool(root, "writeEnabled", config.WriteEnabled);
                 config.EscapeHatchEnabled = ReadBool(root, "escapeHatchEnabled", config.EscapeHatchEnabled);
+                config.AutoConfirmUnknownDialogs = ReadBool(root, "autoConfirmUnknownDialogs", config.AutoConfirmUnknownDialogs);
                 config.MaxElementsPerWrite = ReadInt(root, "maxElementsPerWrite", config.MaxElementsPerWrite);
                 config.DefaultToolTimeoutSeconds = ReadInt(root, "defaultToolTimeoutSeconds", config.DefaultToolTimeoutSeconds);
                 config.DisabledTools = ReadStringList(root, "disabledTools", config.DisabledTools);
@@ -118,6 +132,7 @@ namespace RevitMCP.Addin.Configuration
                 .Set("token", Token ?? string.Empty)
                 .Set("writeEnabled", WriteEnabled)
                 .Set("escapeHatchEnabled", EscapeHatchEnabled)
+                .Set("autoConfirmUnknownDialogs", AutoConfirmUnknownDialogs)
                 .Set("maxElementsPerWrite", MaxElementsPerWrite)
                 .Set("defaultToolTimeoutSeconds", DefaultToolTimeoutSeconds)
                 .Set("disabledTools", ToArray(DisabledTools))

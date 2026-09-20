@@ -17,6 +17,17 @@ namespace RevitMCP.Addin.Execution
     /// </summary>
     public sealed class RevitWriteScope : IWriteScope<UIApplication>
     {
+        private readonly Func<bool> _autoConfirmUnknownDialogs;
+
+        /// <param name="autoConfirmUnknownDialogs">
+        /// 认不出来的模态对话框是否也自动确认。用委托而非快照，
+        /// 这样用户改了配置立刻生效，不必重启 Revit。省略即"不自动确认"。
+        /// </param>
+        public RevitWriteScope(Func<bool> autoConfirmUnknownDialogs = null)
+        {
+            _autoConfirmUnknownDialogs = autoConfirmUnknownDialogs ?? (() => false);
+        }
+
         public TResult Run<TResult>(UIApplication host, WriteScopeInfo info, Func<TResult> work)
         {
             var document = host?.ActiveUIDocument?.Document;
@@ -29,7 +40,7 @@ namespace RevitMCP.Addin.Execution
                 throw new ToolFailureException(McpDomainError.TransactionFailed,
                     "当前文档是只读的（可能是链接模型或以只读方式打开），无法修改。");
 
-            using (var dialogs = new DialogSuppressor(host, info.Warnings))
+            using (var dialogs = new DialogSuppressor(host, info.Warnings, SafeAutoConfirm()))
             using (var transaction = new Transaction(document, "MCP: " + info.ToolName))
             {
                 if (transaction.Start() != TransactionStatus.Started)
@@ -64,8 +75,19 @@ namespace RevitMCP.Addin.Execution
                 if (dialogs.SuppressedCount > 0)
                     Log.Warn(info.ToolName + " 执行期间拦截了 " + dialogs.SuppressedCount + " 个对话框。");
 
+                if (dialogs.NeedsUserAction)
+                    info.Warnings.Add(
+                        "这次执行期间 Revit 弹出了本服务认不出来的对话框，已按「不替用户做决定」处理。" +
+                        "回执里的结果可能不完整，请核对模型，或到 Revit 界面上把这一步走一遍。");
+
                 return result;
             }
+        }
+
+        private bool SafeAutoConfirm()
+        {
+            try { return _autoConfirmUnknownDialogs(); }
+            catch { return false; }
         }
 
         private static void ApplyFailureHandling(Transaction transaction, IFailuresPreprocessor preprocessor)

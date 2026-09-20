@@ -61,7 +61,7 @@ namespace RevitMCP.Addin.Tools
         [McpParam("要写入的参数，可以一次写多个。" +
                   "值一律用字符串：数值按项目显示单位解释，是/否用 true/false，" +
                   "ElementId 类参数（材质、标高）传目标构件的 ID", Required = true)]
-        public List<TypeParameterValue> Parameters { get; set; }
+        public List<ParameterValueSpec> Parameters { get; set; }
     }
 
     public sealed class BatchSetParametersInput
@@ -242,7 +242,8 @@ namespace RevitMCP.Addin.Tools
                             "构件 " + element.Id.ToProtocolString() + " 的参数 \"" + name +
                             "\" 是只读的，改不了（整批未改动）。");
 
-                    ParameterWriter.Write(parameter, entry.Value ?? string.Empty, element);
+                    ParameterWriter.Write(parameter, entry.Value ?? string.Empty, element,
+                        ParameterWriter.ParseInternalMode(entry.ValueMode));
                     result.Writes++;
                 }
 

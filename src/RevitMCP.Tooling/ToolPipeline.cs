@@ -125,6 +125,70 @@ namespace RevitMCP.Tooling
             }
         }
 
+        /// <summary>
+        /// 把 expectedDocumentId 从 arguments 里摘出来。
+        ///
+        /// 摘而不是留：工具的入参绑定是严格的，留着它每个写工具都会报"未知参数"。
+        /// 原对象不改动——同一个 JsonValue 可能还要用于审计。
+        /// </summary>
+        private static JsonValue TakeExpectedDocument(JsonValue arguments, out string expected)
+        {
+            expected = null;
+            if (arguments == null || !arguments.IsObject) return arguments;
+
+            JsonValue value;
+            if (!arguments.TryGet(SchemaGenerator.ExpectedDocumentParameter, out value)) return arguments;
+
+            if (value != null && value.Kind == JsonKind.String) expected = value.AsString;
+
+            var copy = JsonValue.NewObject();
+            foreach (var key in arguments.Keys)
+            {
+                if (key == SchemaGenerator.ExpectedDocumentParameter) continue;
+
+                JsonValue item;
+                if (arguments.TryGet(key, out item)) copy.Set(key, item);
+            }
+
+            return copy;
+        }
+
+        /// <summary>
+        /// 目标文档核对。
+        ///
+        /// 这是**前置条件**，不是事后提示：切换警告是在工具执行完之后才附加的，
+        /// 那时模型已经改完了另一个项目。所以核对必须发生在主线程上、执行之前，
+        /// 不匹配就一个字节都不动。
+        ///
+        /// 比较对活动文档的两种写法都认：完整路径（list_documents 的 id）和标题。
+        /// 模型手里常常只有其中一个，为此让它多查一次没有意义。
+        /// </summary>
+        private static void RequireExpectedDocument(string expected, ContextIdentity identity)
+        {
+            if (string.IsNullOrWhiteSpace(expected)) return;
+
+            var wanted = expected.Trim();
+
+            if (identity == null)
+                throw new ToolFailureException(McpDomainError.WrongDocument,
+                    "读不到当前活动文档的身份，无法确认它就是 expectedDocumentId 指定的「" + wanted +
+                    "」。为安全起见没有执行。");
+
+            if (Matches(identity.Key, wanted) || Matches(identity.Label, wanted)) return;
+
+            throw new ToolFailureException(McpDomainError.WrongDocument,
+                "expectedDocumentId 是「" + wanted + "」，但此刻的活动文档是「" +
+                (identity.Label ?? identity.Key ?? "未知") + "」，这次写入没有执行，两个文档都没有被改动。" +
+                "用 revit_list_documents 看看现在开着哪些文档；要改的那个不是活动文档时，" +
+                "先用 revit_open_document 把它激活。**之前查到的构件 ID 属于原来那个文档，需要重新查询。**");
+        }
+
+        private static bool Matches(string actual, string wanted)
+        {
+            return !string.IsNullOrEmpty(actual) &&
+                   string.Equals(actual, wanted, StringComparison.OrdinalIgnoreCase);
+        }
+
         public IReadOnlyList<ToolDefinition> ListTools() => _registry.Definitions;
 
         /// <summary>不关心进度时的便利重载。</summary>
@@ -167,6 +231,11 @@ namespace RevitMCP.Tooling
             if (!_registry.TryGet(name, out var tool)) throw new ToolNotFoundException(name);
 
             entry.ReadOnly = tool.IsReadOnly;
+
+            // 写工具的 expectedDocumentId 不属于任何一个工具的 Input DTO：
+            // 先摘出来，免得严格绑定把它当成未知参数拒掉
+            string expectedDocument = null;
+            if (!tool.IsReadOnly) arguments = TakeExpectedDocument(arguments, out expectedDocument);
 
             object input;
             try
@@ -216,6 +285,18 @@ namespace RevitMCP.Tooling
                         {
                             try { identity = _contextIdentity(host); }
                             catch { /* 读不到身份不值得让整个调用失败 */ }
+                        }
+
+                        // 目标核对与写开关复核都必须在**主线程上、动手之前**。
+                        // 排队期间用户可能切了文档、也可能把「修改模型」关掉了；
+                        // 入队时读到的那两个值，到这里已经不一定还成立
+                        if (!tool.IsReadOnly)
+                        {
+                            RequireExpectedDocument(expectedDocument, identity);
+
+                            if (!Invoke(_options.WriteEnabled, false))
+                                throw new ToolFailureException(McpDomainError.WriteDisabled,
+                                    "排队期间用户把「操作模式」切回了「浏览模型」，这次写入没有执行。");
                         }
 
                         var hosted = WithHost(context, host);

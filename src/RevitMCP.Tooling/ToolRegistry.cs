@@ -144,11 +144,16 @@ namespace RevitMCP.Tooling
 
             var binding = Instantiate(type);
 
+            // 写工具统一多一个 expectedDocumentId：写入作用在活动文档上，
+            // 而活动文档会在两次调用之间被用户或另存换掉
+            var schema = SchemaGenerator.Generate(binding.InputType);
+            if (!metadata.ReadOnly) schema = SchemaGenerator.WithExpectedDocument(schema);
+
             var definition = new ToolDefinition(
                 metadata.Name,
                 metadata.Title,
                 metadata.Description,
-                SchemaGenerator.Generate(binding.InputType),
+                schema,
                 // 破坏性默认跟着"非只读"走（规范的默认值也是如此）。
                 // 个别改了模型却谈不上破坏的工具可以显式声明 Destructive = false
                 new ToolAnnotations(

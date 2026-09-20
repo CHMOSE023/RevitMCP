@@ -8,6 +8,11 @@ namespace RevitMCP.Addin.Tools
 {
     public sealed class SaveDocumentInput
     {
+        [McpParam("要保存哪个文档，来自 revit_list_documents。省略则存活动文档。" +
+                  "**同时开着多个项目时请显式给它**——活动文档会被用户切换，也会被另存换掉，" +
+                  "「存一下」存到别的项目上是不可逆的")]
+        public string DocumentId { get; set; }
+
         [McpParam("确认保存。默认 false 时只回报文档状态、不落盘——" +
                   "保存会覆盖用户磁盘上的文件，值得让调用方多打一个字")]
         public bool? Confirm { get; set; }
@@ -17,6 +22,12 @@ namespace RevitMCP.Addin.Tools
     {
         [McpParam("文档标题")]
         public string Title { get; set; }
+
+        [McpParam("实际保存的文档 ID。**核对它就是你想存的那个**——省略 documentId 时它是活动文档")]
+        public string DocumentId { get; set; }
+
+        [McpParam("它是不是当前的活动文档")]
+        public bool IsActive { get; set; }
 
         [McpParam("落盘路径")]
         public string Path { get; set; }
@@ -57,7 +68,9 @@ namespace RevitMCP.Addin.Tools
         public override SaveDocumentOutput Execute(
             SaveDocumentInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            // 保存不同于其他写操作：它不需要文档是活动的，
+            // 而"存错文件"是不可逆的。所以这里认 documentId
+            var document = ResolveDocument(context, input.DocumentId);
 
             RequireSaveable(document);
 
@@ -70,6 +83,8 @@ namespace RevitMCP.Addin.Tools
             var output = new SaveDocumentOutput
             {
                 Title = SafeString(() => document.Title),
+                DocumentId = DocumentRef.KeyOf(document),
+                IsActive = IsActiveDocument(context, document),
                 Path = path,
                 HadUnsavedChanges = SafeBool(() => document.IsModified)
             };
@@ -132,6 +147,17 @@ namespace RevitMCP.Addin.Tools
                 "要同步请用户在 Revit 里操作——同步会影响协同的其他人，不该由这里代劳。");
         }
 
+        /// <summary>这个文档是不是当前的活动文档。回执里明说，省得调用方自己去猜。</summary>
+        internal static bool IsActiveDocument(ToolExecutionContext<UIApplication> context, Document document)
+        {
+            try
+            {
+                var active = context.Host?.ActiveUIDocument?.Document;
+                return active != null && document != null && active.Equals(document);
+            }
+            catch { return false; }
+        }
+
         internal static long? FileSize(string path)
         {
             try
@@ -157,6 +183,12 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class SaveDocumentAsInput
     {
+        [McpParam("要另存哪个文档，来自 revit_list_documents。省略则另存活动文档。" +
+                  "**这一条比别处更要紧**：另存写的是「当前是谁」，" +
+                  "而当前是谁会被用户切换、也会被上一次另存改掉——" +
+                  "结果就是把另一个项目复制成了你要的文件名")]
+        public string DocumentId { get; set; }
+
         [McpParam("目标文件的**完整路径**，如 \"D:\\项目\\办公楼-备份.rvt\"。" +
                   "必须含盘符，扩展名必须是 .rvt。" +
                   "目录必须已经存在——工具不会替你建目录，路径打错一个字就会建出" +
@@ -172,6 +204,13 @@ namespace RevitMCP.Addin.Tools
     {
         [McpParam("文档标题（另存后会变成新文件名）")]
         public string Title { get; set; }
+
+        [McpParam("另存后这个文档的 ID（就是新路径）。后续写操作的 expectedDocumentId 用它")]
+        public string DocumentId { get; set; }
+
+        [McpParam("被另存的是不是当前活动文档。为 false 说明你存的是一个后台文档，" +
+                  "Revit 里正在看的还是原来那个")]
+        public bool IsActive { get; set; }
 
         [McpParam("新文件的完整路径")]
         public string Path { get; set; }
@@ -217,7 +256,7 @@ namespace RevitMCP.Addin.Tools
         /// **刻意不替调用方建目录**——路径打错一个字就会建出一个没人找得到的文件夹，
         /// 而那个文件夹里躺着一份几十兆的模型。
         /// </summary>
-        private static string ResolveTarget(string raw)
+        internal static string ResolveTarget(string raw)
         {
             if (string.IsNullOrWhiteSpace(raw))
                 throw new ToolFailureException(McpDomainError.InvalidParameter,
@@ -252,7 +291,7 @@ namespace RevitMCP.Addin.Tools
         public override SaveDocumentAsOutput Execute(
             SaveDocumentAsInput input, ToolExecutionContext<UIApplication> context)
         {
-            var document = RequireDocument(context);
+            var document = ResolveDocument(context, input.DocumentId);
 
             SaveDocumentTool.RequireSaveable(document);
 
@@ -288,6 +327,8 @@ namespace RevitMCP.Addin.Tools
             return new SaveDocumentAsOutput
             {
                 Title = SaveDocumentTool.SafeString(() => document.Title),
+                DocumentId = DocumentRef.KeyOf(document),
+                IsActive = SaveDocumentTool.IsActiveDocument(context, document),
                 Path = target,
                 PreviousPath = string.IsNullOrEmpty(previous) ? null : previous,
                 FileSizeBytes = SaveDocumentTool.FileSize(target)

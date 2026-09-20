@@ -279,18 +279,57 @@ namespace RevitMCP.Transport
         private static string AsString(JsonValue value) =>
             value != null && value.Kind == JsonKind.String ? value.AsString : null;
 
+        /// <summary>
+        /// Origin 白名单。
+        ///
+        /// **按 URI 比，不按字符串前缀比。** 前缀匹配下，允许 <c>https://claude.ai</c>
+        /// 就等于同时允许了 <c>https://claude.ai.attacker.example</c>——
+        /// 那是一个完全不相干的域名，只是恰好以允许项开头。
+        ///
+        /// 比的是 scheme + host + port 三件套，端口只放宽一处：
+        /// · 本机来源（localhost / 127.0.0.1 / ::1）且允许项没写端口时，任意端口都放行——
+        ///   本地开发服务器的端口天天在变，写死一个既挡不住谁，又只会逼用户去改配置；
+        /// · 其余情况端口必须一致。<c>https://claude.ai</c> 不会连带放行 <c>https://claude.ai:8443</c>。
+        ///
+        /// 这只是纵深防御的一层：原生客户端根本不带 Origin，真正的门是 Bearer 令牌与 Loopback 监听。
+        /// </summary>
         private bool IsOriginAllowed(string origin)
         {
             // 原生客户端（Claude Code 等）不带 Origin。只有浏览器会带，那才是 DNS rebinding 的攻击面。
             if (string.IsNullOrEmpty(origin)) return true;
             if (_options.AllowedOrigins == null || _options.AllowedOrigins.Count == 0) return false;
 
+            // "null" 是浏览器对沙箱化/不透明来源的写法，不能当成一个可比较的 origin
+            if (string.Equals(origin.Trim(), "null", StringComparison.OrdinalIgnoreCase)) return false;
+
+            Uri actual;
+            if (!Uri.TryCreate(origin.Trim(), UriKind.Absolute, out actual)) return false;
+
             foreach (var allowed in _options.AllowedOrigins)
             {
                 if (string.IsNullOrEmpty(allowed)) continue;
-                if (origin.StartsWith(allowed, StringComparison.OrdinalIgnoreCase)) return true;
+
+                Uri expected;
+                if (!Uri.TryCreate(allowed.Trim(), UriKind.Absolute, out expected)) continue;
+
+                if (!string.Equals(actual.Scheme, expected.Scheme, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.Equals(actual.Host, expected.Host, StringComparison.OrdinalIgnoreCase)) continue;
+
+                var anyPort = expected.IsDefaultPort && IsLoopbackHost(expected.Host);
+                if (!anyPort && actual.Port != expected.Port) continue;
+
+                return true;
             }
+
             return false;
+        }
+
+        private static bool IsLoopbackHost(string host)
+        {
+            return string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+                   host == "127.0.0.1" ||
+                   host == "::1" ||
+                   host == "[::1]";
         }
 
         private bool IsAuthorized(HttpRequest request)

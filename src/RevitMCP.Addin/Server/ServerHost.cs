@@ -218,7 +218,7 @@ namespace RevitMCP.Addin.Server
                 Audit = entry => Log.Audit(entry.ToString())
             },
             // 写作用域只作用于非只读工具：开事务、装失败预处理、拦模态框（M4）
-            new RevitWriteScope(),
+            new RevitWriteScope(() => _config.AutoConfirmUnknownDialogs),
             // 活动文档的身份：用户随时可能切换文档，切换后调用方手里的 ID 全部失效（M7）
             DescribeActiveDocument);
         }

@@ -121,19 +121,34 @@ namespace RevitMCP.Addin.Tools
             CreateSupport.EnsureActive(symbol);
 
             var aboveLevelMm = (spec.LocationPoint.Z ?? 0) + (spec.BaseOffset ?? 0);
+
+            // 「省略」和「明确给 0」不是一回事：前者是"随族/Revit 的默认"，
+            // 后者是"我要它正好贴在标高上"。把两者混成 `!= 0` 判断，
+            // 会让默认窗台高不为 0 的窗族在 baseOffset:0 时悄悄停在族的默认高度上。
+            var verticalRequested = spec.BaseOffset.HasValue || spec.LocationPoint.Z.HasValue;
             var needsHost = NeedsHost(category);
 
             var instance = needsHost
-                ? CreateHosted(document, context, spec, index, symbol, level, aboveLevelMm)
+                ? CreateHosted(document, context, spec, index, symbol, level, aboveLevelMm, verticalRequested)
                 : CreateFree(document, context, spec, index, symbol, level, aboveLevelMm, category);
+
+            // 柱的底部约束必须显式写：NewFamilyInstance 只拿插入点的 Z 定位，
+            // 不保证把它记成"底部偏移"。实测（Revit 2019，建筑柱）：
+            // 标高 2 + baseOffset 150 建出来的柱，底面仍在标高 2 的平面上，那 150 毫米被丢掉了。
+            double? baseOffsetMm = null;
+            if (IsColumn(category) && verticalRequested)
+                baseOffsetMm = CreateSupport.SetLengthVerified(
+                    instance, BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM, aboveLevelMm, "底部偏移", index);
 
             var topLevel = CreateSupport.ResolveTopLevel(document, spec.TopLevelId, index);
             if (topLevel != null)
-                ApplyColumnConstraint(instance, category, topLevel, spec.TopOffset ?? 0, context, index);
+                ApplyColumnConstraint(instance, category, topLevel, spec.TopOffset, context, index);
             else if (spec.TopOffset.HasValue)
                 CreateSupport.Once(context, "topOffset 只在给了 topLevelId 时有效，已忽略。");
 
             ApplyFlips(document, instance, spec, context);
+
+            var levelElevationMm = Units.Round(Units.FromFeet(level.Elevation));
 
             return new CreatedElement
             {
@@ -141,7 +156,12 @@ namespace RevitMCP.Addin.Tools
                 Id = instance.Id.ToProtocolString(),
                 Category = category.ToString(),
                 Type = CreateSupport.SafeName(symbol),
-                Level = CreateSupport.SafeName(level)
+                Level = CreateSupport.SafeName(level),
+                LevelElevationMm = levelElevationMm,
+                BaseOffsetMm = baseOffsetMm,
+                ElevationMm = baseOffsetMm.HasValue
+                    ? (double?)Units.Round(levelElevationMm + baseOffsetMm.Value)
+                    : null
             };
         }
 
@@ -156,9 +176,12 @@ namespace RevitMCP.Addin.Tools
 
         private static FamilyInstance CreateHosted(
             Document document, ToolExecutionContext<UIApplication> context,
-            PointBasedElementSpec spec, int index, FamilySymbol symbol, Level level, double aboveLevelMm)
+            PointBasedElementSpec spec, int index, FamilySymbol symbol, Level level, double aboveLevelMm,
+            bool verticalRequested)
         {
-            if (spec.Rotation.HasValue)
+            // rotation: 0 与门窗的既有朝向并不矛盾，不必为它发警告——
+            // 只有真的要求转一个角度时，"被忽略了"才是一条有用的信息
+            if (spec.Rotation.HasValue && Math.Abs(spec.Rotation.Value) > 1e-9)
                 CreateSupport.Once(context,
                     "门窗的朝向由宿主墙决定，rotation 已被忽略。要改朝向用 facingFlipped / handFlipped。");
 
@@ -187,7 +210,7 @@ namespace RevitMCP.Addin.Tools
                 throw CreateSupport.Failure(index, McpDomainError.TransactionFailed,
                     "Revit 未能创建构件，但也没有报错。插入点可能落在墙的范围之外。");
 
-            if (aboveLevelMm != 0) ApplySillHeight(instance, aboveLevelMm, context);
+            if (verticalRequested) ApplySillHeight(instance, aboveLevelMm, index);
 
             return instance;
         }
@@ -282,7 +305,7 @@ namespace RevitMCP.Addin.Tools
         /// 没有这个，一根柱子在层高改变时不会跟着变——模型和图纸当场脱节。
         /// </summary>
         private static void ApplyColumnConstraint(
-            FamilyInstance instance, BuiltInCategory category, Level topLevel, double topOffsetMm,
+            FamilyInstance instance, BuiltInCategory category, Level topLevel, double? topOffsetMm,
             ToolExecutionContext<UIApplication> context, int index)
         {
             if (!IsColumn(category))
@@ -293,7 +316,7 @@ namespace RevitMCP.Addin.Tools
 
             CreateSupport.ApplyTopConstraint(
                 instance, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM,
-                BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM, topLevel, topOffsetMm, context);
+                BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM, topLevel, topOffsetMm, context, index);
         }
 
         private static bool IsColumn(BuiltInCategory category)
@@ -381,16 +404,23 @@ namespace RevitMCP.Addin.Tools
         /// 门窗的竖向位置是「窗台高度」，不是构件本身的 Z 坐标。
         /// 设不上只警告不失败：构件已经在墙上的正确平面位置，为一个高度回滚整批不划算。
         /// </summary>
-        private static void ApplySillHeight(
-            FamilyInstance instance, double aboveLevelMm, ToolExecutionContext<UIApplication> context)
+        /// <summary>
+        /// 窗台高度。调用方明确要了一个竖向位置，就必须真的落实——
+        /// 设不上而只留一条警告，等于交付一个高度是族默认值的窗，
+        /// 它在平面上看不出来，在剖面上才会暴露。
+        /// </summary>
+        private static void ApplySillHeight(FamilyInstance instance, double aboveLevelMm, int index)
         {
-            var feet = Units.ToFeet(aboveLevelMm);
+            var actual = CreateSupport.SetLengthVerified(
+                instance, BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM, aboveLevelMm, "窗台高度", index);
 
-            if (TrySet(instance, BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM, feet)) return;
+            if (actual.HasValue) return;
 
-            CreateSupport.Once(context,
-                "构件 " + instance.Id.ToProtocolString() + " 的窗台高度没能设成 " + aboveLevelMm +
-                " 毫米（该族可能没有这个参数），高度用的是族类型的默认值。");
+            throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
+                "族「" + CreateSupport.SafeName(instance.Symbol) + "」没有窗台高度参数，" +
+                "baseOffset / locationPoint.z（合计 " + CreateSupport.Format(aboveLevelMm) +
+                " 毫米）无处可写。这个族的竖向位置只能由它自己的参数决定，请改用 levelId，" +
+                "或建完后用 revit_set_element_parameters 写它真正的高度参数。");
         }
 
         private static void ApplyFlips(

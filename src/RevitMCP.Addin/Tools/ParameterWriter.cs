@@ -15,12 +15,40 @@ namespace RevitMCP.Addin.Tools
     /// </summary>
     internal static class ParameterWriter
     {
+        /// <summary>对外的 valueMode 取值。工具的参数说明里直接引用它们。</summary>
+        public const string ProjectUnitsMode = "projectUnits";
+
+        public const string InternalMode = "internal";
+
+        /// <summary>
+        /// 解析 valueMode。省略即 projectUnits——这是绝大多数调用方以为自己在用的语义。
+        /// </summary>
+        /// <returns>true 表示按 Revit 内部单位写入。</returns>
+        public static bool ParseInternalMode(string valueMode)
+        {
+            if (string.IsNullOrWhiteSpace(valueMode)) return false;
+
+            var text = valueMode.Trim();
+
+            if (string.Equals(text, ProjectUnitsMode, StringComparison.OrdinalIgnoreCase)) return false;
+            if (string.Equals(text, InternalMode, StringComparison.OrdinalIgnoreCase)) return true;
+
+            throw new ToolFailureException(McpDomainError.InvalidParameter,
+                "无法识别的 valueMode \"" + valueMode + "\"。可用值：" + ProjectUnitsMode +
+                "（默认，按项目显示单位解释，和用户在 Revit 里敲进去一样）、" +
+                InternalMode + "（按 Revit 内部单位：长度英尺、角度弧度）。");
+        }
+
         /// <summary>
         /// 写入一个参数值。字符串到各 StorageType 的转换全在这里。
-        /// Double 优先走 SetValueString：它按用户的项目单位解释输入，
+        /// Double 走 SetValueString：它按用户的项目单位解释输入，
         /// 模型写 "3000" 得到的就是 3000 毫米，而不是 3000 英尺。
         /// </summary>
-        public static void Write(Parameter parameter, string value, Element element)
+        /// <param name="internalUnits">
+        /// true 表示调用方明确要求按 Revit 内部单位写。**这必须是显式选择**：
+        /// 同一个 "3000" 在两种模式下相差 304.8 倍，靠回退猜出来的那一种一定是错的。
+        /// </param>
+        public static void Write(Parameter parameter, string value, Element element, bool internalUnits = false)
         {
             var name = parameter.Definition?.Name ?? "(未命名)";
 
@@ -35,7 +63,7 @@ namespace RevitMCP.Addin.Tools
                     return;
 
                 case StorageType.Double:
-                    WriteDouble(parameter, name, value, element);
+                    WriteDouble(parameter, name, value, element, internalUnits);
                     return;
 
                 case StorageType.ElementId:
@@ -80,18 +108,59 @@ namespace RevitMCP.Addin.Tools
             if (!parameter.Set(target.Id)) throw Rejected(name, value, element);
         }
 
-        private static void WriteDouble(Parameter parameter, string name, string value, Element element)
+        /// <summary>
+        /// 写入 Double 参数。
+        ///
+        /// **这里不许有"单位回退"。** 曾经的写法是：先试 <c>SetValueString</c>（按项目显示单位），
+        /// 失败就把字符串解析成 double 直接 <c>Set</c>（按 Revit 内部单位）。
+        /// 于是同一句 "3000"，在一条路径上是 3000 毫米、在另一条上是 3000 英尺——
+        /// 相差 304.8 倍，而调用方拿到的都是"成功"。
+        ///
+        /// 现在两种语义都必须由调用方显式选（valueMode），选定了就不再改口：
+        /// 按项目单位写不进去就报错，并把"你要的是不是内部单位"直接问回去。
+        /// </summary>
+        private static void WriteDouble(
+            Parameter parameter, string name, string value, Element element, bool internalUnits)
         {
-            // 带单位解释成功就用它——这是用户在 Revit 界面里输入同一个值时得到的结果
-            try { if (parameter.SetValueString(value)) return; }
-            catch { /* 部分参数不支持 SetValueString，落到下面按内部单位写 */ }
+            if (internalUnits)
+            {
+                if (!parameter.Set(ParseNumber(name, value, InternalMode))) throw Rejected(name, value, element);
+                return;
+            }
 
+            // 按项目显示单位解释——这是用户在 Revit 界面里敲同一个值时得到的结果
+            string problem = null;
+            try
+            {
+                if (parameter.SetValueString(value)) return;
+            }
+            catch (Exception ex)
+            {
+                problem = ex.Message;
+            }
+
+            // 先确认它至少是个数，好把"写了个词进来"和"这个参数不认显示单位"分开说
+            var number = ParseNumber(name, value, ProjectUnitsMode);
+
+            throw new ToolFailureException(McpDomainError.InvalidParameter,
+                "参数 \"" + name + "\" 没能按项目显示单位写成 " +
+                number.ToString("0.###", CultureInfo.InvariantCulture) +
+                (problem == null ? "" : "（" + problem + "）") +
+                "。这个参数可能不带单位，或不接受按显示单位赋值。" +
+                "如果这个数本来就是 Revit 内部单位（长度英尺、角度弧度），" +
+                "请显式传 valueMode: \"" + InternalMode + "\" —— " +
+                "工具不会替你在两种单位之间猜，猜错就是 304.8 倍的差距。");
+        }
+
+        private static double ParseNumber(string name, string value, string mode)
+        {
             double number;
-            if (!double.TryParse(value.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out number))
-                throw new ToolFailureException(McpDomainError.InvalidParameter,
-                    "参数 \"" + name + "\" 需要一个数值，但收到 \"" + value + "\"。");
+            if (double.TryParse((value ?? string.Empty).Trim(), NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out number))
+                return number;
 
-            if (!parameter.Set(number)) throw Rejected(name, value, element);
+            throw new ToolFailureException(McpDomainError.InvalidParameter,
+                "参数 \"" + name + "\" 需要一个数值（valueMode: " + mode + "），但收到 \"" + value + "\"。");
         }
 
         /// <summary>

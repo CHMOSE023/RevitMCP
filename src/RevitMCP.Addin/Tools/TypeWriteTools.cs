@@ -237,6 +237,11 @@ namespace RevitMCP.Addin.Tools
                   "是/否类参数可用 true/false 或 是/否；ElementId 类参数（材质、标高这类）传目标构件的 ID，传 -1 或空字符串表示清空", Required = true)]
         public string Value { get; set; }
 
+        [McpParam("数值按哪种单位解释：projectUnits（默认，项目显示单位）、internal（Revit 内部单位：长度英尺、角度弧度）。" +
+                  "写不进去会报错，不会在两种单位之间回退猜测",
+                  AllowedValues = new[] { "projectUnits", "internal" })]
+        public string ValueMode { get; set; }
+
         [McpParam("影响类型数超过上限时，带上 true 表示确认后再执行")]
         public bool? Confirm { get; set; }
     }
@@ -347,7 +352,7 @@ namespace RevitMCP.Addin.Tools
                 instanceCounts.TryGetValue(type.Id.GetValue(), out var instances);
                 change.InstanceCount = instances;
 
-                ParameterWriter.Write(parameter, input.Value, type);
+                ParameterWriter.Write(parameter, input.Value, type, ParameterWriter.ParseInternalMode(input.ValueMode));
                 change.NewValue = ParameterWriter.DisplayOf(parameter);
 
                 output.Types.Add(change);

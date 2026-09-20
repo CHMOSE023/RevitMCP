@@ -37,11 +37,11 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("要写入的图纸参数（「审核者」「设计者」「出图日期」这类）。" +
                   "参数名用 revit_get_sheet_contents 查，不要猜——它们随项目样板和语言变化")]
-        public List<TypeParameterValue> Parameters { get; set; }
+        public List<ParameterValueSpec> Parameters { get; set; }
 
         [McpParam("要写入标题栏实例自身的参数。有些项目把项目名称、业主一类的信息" +
                   "放在标题栏族实例上而不是图纸上，那种就用这个")]
-        public List<TypeParameterValue> TitleBlockParameters { get; set; }
+        public List<ParameterValueSpec> TitleBlockParameters { get; set; }
     }
 
     public sealed class UpdateSheetsInput
@@ -367,7 +367,7 @@ namespace RevitMCP.Addin.Tools
         }
 
         private static void WriteParameters(
-            Element target, IList<TypeParameterValue> values, SheetUpdateResult result,
+            Element target, IList<ParameterValueSpec> values, SheetUpdateResult result,
             int index, string fieldName)
         {
             if (values == null) return;

@@ -1,0 +1,204 @@
+# M10-D 正确性修复记录
+
+针对《RevitMCP 源码评估与改进报告（2026-09-20）》第一阶段（F01–F08）以及两条低成本的 P2（F11、F12 的一部分）。
+每条都写清楚：**原来错在哪、为什么它不会报错、现在怎么做、怎么验**。
+
+跨版本影响：Revit 2019–2024 六套配置全部编译通过。
+自动化测试 386 → 406（Protocol 33 / Tooling 157 / Addin 151 / Server 65）。
+
+**真实 Revit 验收：2026-09-20，Revit 2019 中文版，Release R19 产物，
+[`workflows/m10d-correctness.ps1`](../workflows/m10d-correctness.ps1) 17 项断言全部通过。**
+逐项量到的值：
+
+| 项 | 量到的 |
+|---|---|
+| F01 楼板落在 12345 标高上（省略 baseOffset） | 顶面 12345.0，回执 `elevationMm` 与几何一致 |
+| F01 偏移语义（0 / +300 / −450） | 12345.0 / 12645.0 / 11895.0 |
+| F06 柱底部偏移 150 | 底面 12495.0，回执 `baseOffsetMm` = 150 |
+| F03 立面 | `revit_list_view_family_types` 返回 2 个立面类型；建出的视图 `viewType` = Elevation |
+| F04 房间标记 | 建得出来；第二次带 `skipTagged` 时 `alreadyTagged` ≥ 1，不重复加 |
+| F02 目标文档 | 不匹配返回 `WRONG_DOCUMENT` 且模型无变化；匹配照常执行 |
+| F11 图纸 | 中心在纸内、左边探出纸外的视口被报了出来 |
+| F07 警告 | 两块重叠楼板得到一条归并警告，带构件 ID `333901、333908` 与"去量几何"的提示 |
+
+---
+
+## F01（P1）楼板忽略 `levelId`，落在项目零高程
+
+**原来**：`CreateSurfaceBasedTool` 把边界 Z 压平到项目绝对 0 交给 `NewFloor`，
+Revit 于是把「草图平面与标高的高差」记成 `自标高的高度偏移 = 0 − 标高高程`；
+而纠正这个偏移的 `ApplyOffset` 只在 `offsetMm != 0` 时才跑。
+于是**最常见的调用**——省略 `baseOffset`、指望板落在标高上——恰恰是错的：
+标高参数是对的，几何在零高程，读接口与真实位置互相矛盾。
+
+**为什么不报错**：Revit 只会产生「楼板重叠」警告，而警告被自动忽略（见 F07），
+回执里只剩三条一模一样的话，不带构件 ID。
+
+**现在**：
+- 偏移**无条件写一遍，再读回来核对**（`CreateSupport.SetLengthVerified`），对不上就抛错、整批回滚——
+  位置错了的板比建不出来的板危险得多。
+- 参数不存在且请求了非零偏移，直接报错，不再静默忽略。
+- 回执新增 `levelElevationMm` / `baseOffsetMm`（读回来的实际值）/ `elevationMm`，
+  可以直接和图纸标高核对，不必再查一次参数。
+
+**怎么验**：`m10d-correctness.ps1` 的 F01 段——非零标高上建四块板
+（省略 / 0 / +300 / −450），量顶面高程，并核对回执与几何一致。
+
+---
+
+## F02（P1）写操作的目标文档没有前置约束
+
+**原来**：写工具一律作用于**活动文档**，而活动文档会在两次调用之间变（用户切窗口、上一步另存）。
+唯一的防护是执行**之后**附加一句"文档换了"——那时已经改完了。
+更糟的是 `action: "new"`：`NewProjectDocument` 建出的文档没有文件、不能激活，
+紧接着的 `revit_save_document_as` 存的却是**上一个**还活着的项目。
+
+**现在**：
+- 所有写工具统一多一个 `expectedDocumentId`（管线级参数，不写进每个 DTO）。
+  校验发生在**主线程上、执行之前**，不匹配返回新错误码 `WRONG_DOCUMENT`，模型一个字节都不动。
+  路径与标题两种写法都认。
+- 同一位置**复核写入开关**：排队期间用户把「修改模型」关掉，队列里的写入不再放行。
+- `revit_save_document` / `revit_save_document_as` 新增 `documentId`，
+  回执给出 `documentId` 与 `isActive`——"存的是哪个文件"不再靠猜。
+- `action: "new"` 新增 `savePath` / `overwrite`：走完「新建 → 另存 → 关掉数据库文档 → 打开并激活 → 核对身份」，
+  回执里的 `stages` 说明实际走到了哪一步。没给 `savePath` 时的提示也改成指向它，而不是"请用户去 Revit 里保存"。
+
+**怎么验**：`ExpectedDocumentTests`（9 项，含"被拒绝的写入没有碰过任何东西"）；
+工作流的 F02 段在真实 Revit 上再验一次。
+
+---
+
+## F03（P1）立面用剖面的入口创建，必然失败
+
+**原来**：`elevation` 走 `ViewSection.CreateSection(..., Elevation 的 ViewFamilyType)`，
+Revit 固定回一句 `The ViewFamilyType must be a Section ViewFamily`——任何参数组合都建不出来。
+错误提示让调用方显式指定 `viewFamilyTypeId`，而当时**没有任何工具能列出视图族类型**
+（`revit_list_types` 查 `OST_Views` 返回 0 条），补救路径也是死的。
+
+**现在**：
+- 立面改走 `ElevationMarker.CreateElevationMarker` + `CreateElevation(planViewId, slot)`。
+  槽位号与朝向的对应关系 API 没有承诺，所以**不猜**：建出来读 `ViewDirection` 核对，
+  不对就删掉换下一个槽位；四个都不匹配才报错，并把标记一起清理掉。
+- `sectionLine` 对立面的语义写清楚了：`p0` 是标记位置，`p0→p1` 就是视线方向。
+- `levelId` 决定标记画在哪张平面上（立面属于它所在的平面）；省略时退到活动平面并说出来。
+- `depthMm` 落到远裁剪，`bottomMm`/`topMm` 落到裁剪框，只有显式给了才动。
+- **新增工具 `revit_list_view_family_types`**：列出视图族类型、它对应的 `viewType`、
+  以及"省略时会不会选中它"（`isDefaultPick`，按与创建工具完全一致的顺序算出来）。
+
+---
+
+## F04（P1）房间标记走错 API，"缺族"的提示还把人引向错误方向
+
+**原来**：所有标记一律 `IndependentTag.Create(..., TM_ADDBY_CATEGORY, ...)`。
+房间/空间/面积是 SpatialElement，Revit 为它们准备的是 `NewRoomTag` / `NewSpaceTag` / `NewAreaTag`；
+走通用路径必然失败，且失败文案写死成"最常见的原因是项目里没有载入这个类别的标记族"。
+**实测**：项目里有 6 个房间标记类型、显式指定 `typeId`，报错一字不变——
+这句话让排查方向整个跑偏。
+
+**现在**：
+- 按目标类别分派到 RoomTag / SpaceTag / AreaTag / IndependentTag 四条路径。
+- 失败诊断改成**去数一遍**对应标记类别下载入了几个类型，据此分别说
+  "确实没载入族" / "载入了 N 个，所以不是缺族——多半是视图类型不合适"。
+- `AlreadyTaggedIn` 同时统计 `SpatialElementTag`，否则 `skipTagged` 对房间永远不生效，
+  第二次调用会把每个房间再标一遍，两个标记叠在一起看不出来。
+
+---
+
+## F05（P1）参数写入在两种单位之间静默回退
+
+**原来**：`WriteDouble` 先试 `SetValueString`（按项目显示单位），失败就解析成 double 直接 `Set`
+（按 Revit **内部单位**）。同一句 `"3000"` 在两条路径上相差 304.8 倍，而调用方拿到的都是"成功"。
+
+**现在**：两种语义都必须由调用方显式选——`valueMode: "projectUnits"`（默认）/ `"internal"`，
+已加到 `revit_set_element_parameters`、`revit_set_type_parameters`、
+`revit_batch_set_parameters`、`revit_duplicate_type`。
+按项目单位写不进去就报错，并把"你要的是不是内部单位"直接问回去，不再替调用方猜。
+
+---
+
+## F06（P1）柱的底部约束没写，零值与省略混为一谈
+
+**原来**：`NewFamilyInstance` 只拿插入点的 Z 定位，不保证把它记成"底部偏移"。
+**实测（Revit 2019 建筑柱）**：标高 2 + `baseOffset: 150` 建出的柱，底面仍在标高平面上，150 毫米被丢掉。
+另外两处零值问题：`rotation: 0` 也会触发"旋转被忽略"的警告；
+窗台高度只在非零时才写，于是"明确要求贴标高（0）"和"没提"变成了同一件事。
+
+**现在**：
+- 柱的 `FAMILY_BASE_LEVEL_OFFSET_PARAM` 显式写入并读回核对；回执给出 `baseOffsetMm` / `elevationMm`。
+- 顶部偏移改成"给了就写（含 0）、写完核对"，没给才保持 Revit 的取值。
+- `rotation` 只有真的非零才提示被忽略。
+- 窗台高度：只要调用方给了 `baseOffset` 或 `locationPoint.z`（哪怕是 0）就写并核对；
+  族没有这个参数时报错而不是留一条警告——调用方明确要的竖向位置没落实，不该算成功。
+
+---
+
+## F07（P1）警告与对话框处理过于宽泛
+
+**原来**：所有 Warning 一律删除、逐条塞进 warnings（不带构件 ID、同一种重复几十条）；
+任何模态对话框统一 `OverrideResult(1)`——而"第一个按钮"在不同对话框上分别意味着确定、是、删除、覆盖。
+
+**现在**：
+- 警告按种类归并，带上**涉事构件 ID**（最多 12 个，超出只报总数）；
+  重叠/重复这类几何冲突额外点一句"这通常说明构件放错了位置，去量一下几何"——
+  F01 那次，这恰恰是唯一的求救信号。
+- 对话框改成策略表：白名单内的照常确认；其余**优先取消**（这一步失败、事务回滚、模型原样不动），
+  并在回执里说明需要人来决定；只有连取消都不支持时才退回点确定。
+  新增配置 `autoConfirmUnknownDialogs`（默认 false）作为逃生阀。
+
+> ⚠️ 这是本批唯一可能影响既有流程的改动：如果某个建模动作必须点掉一个安全的对话框，
+> 它现在会失败而不是默默通过。请把那个对话框的 `DialogId`（回执里有）加进
+> `DialogSuppressor.AutoConfirm` 白名单，而不是长期打开 `autoConfirmUnknownDialogs`。
+
+---
+
+## F08（P1）Origin 白名单按字符串前缀匹配
+
+**原来**：`origin.StartsWith(allowed)`。允许 `https://claude.ai` 就等于同时允许了
+`https://claude.ai.attacker.example`——一个毫不相干的域名，只是恰好以允许项开头。
+
+**现在**：解析成 URI，比 scheme + host + port。端口只放宽一处：
+本机来源（localhost / 127.0.0.1 / ::1）且允许项没写端口时任意端口放行（本地开发服务器端口天天变），
+其余必须一致。`"null"` 与非法 URI 一律拒绝。
+
+**怎么验**：`McpEndpointTests` 新增 11 项（相似域名、scheme、端口、用户信息、`null`、大小写、本机端口）。
+
+> 边界：这是 Origin 校验缺陷，不等于绕过 Bearer 认证。Loopback 监听与令牌仍在。
+
+---
+
+## F11（P2）图纸只检查视口中心
+
+**原来**：`IsOutside` 只比 `box.Center` 与纸张 Min/Max。中心在纸内、外框探出去多少都不报。
+明细表更彻底：`Box` 直接返回 `null`，连中心点检查都绕过。
+
+**现在**：比完整外框（1 毫米容差），把越界方向和毫米数报出来；
+新增视口两两重叠的提醒；明细表实例 `Regenerate` 后取包围盒，不再是 `null`。
+**没做**：压住标题栏的检查——标题栏族的包围盒通常就是整张图纸，拿它当禁区会把每个视口都判成违规，
+这需要一份可配置的图面布局区，代码里写了为什么。
+
+---
+
+## F12（P2，部分）参数面拉齐
+
+- `revit_get_element_geometry` 现在接受 `documentId`——此前跨文档检查走到"量一下几何"就断了。
+- `revit_list_schedulable_fields` 现在接受 `documentId` 与 `limit`（默认 200 / 上限 1000），
+  回执给出 `returned` / `truncated`，与其它 `list_*` 一致。
+
+**没做**（仍属报告的第二阶段）：结构化错误对象、通用 cursor 分页、字段投影、
+操作状态与幂等契约（F09）、客户端结果去重（F10）。
+
+---
+
+## 顺手改的
+
+- `TypeParameterValue` 重命名为 `ParameterValueSpec`：它只用于入参，
+  而契约测试按类名后缀判断输入/输出——名字不对会让"输出上声明 AllowedValues 是死代码"这条检查误报。
+- README 的工具计数改成 70 = 34 只读 + 36 写（原文开头写 69/33/36、后文写 68/29/39，两处都不对）。
+
+## 没做的
+
+- **F09**（操作状态、幂等键、提交前统一取消检查）、**F10**（回执双份数据与查询成本）、
+  **F13**（几何语义回归集的其余部分）、**F14**（载入族、原生楼梯栏杆、房间竖向约束、导出取景）、
+  **F15**（建模 skill）——都是第二、三阶段的内容，工作量与本批不在一个量级。
+- **F07 的严格模式回滚**：把重叠这类质量警告升级为回滚，需要一个贯穿配置与写作用域的开关，
+  且会改变既有建模流程的成败判定，留给后续单独评估。

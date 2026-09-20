@@ -15,10 +15,52 @@ namespace RevitMCP.Tooling.Schema
     {
         private const int MaxDepth = 8;
 
+        /// <summary>
+        /// 所有写工具都收的前置条件参数。不写进每个 Input DTO，
+        /// 是因为它不属于任何一个工具的业务——它是"这次写入允许作用在谁身上"，
+        /// 由管线在编组到主线程之后、执行之前统一校验。
+        /// </summary>
+        public const string ExpectedDocumentParameter = "expectedDocumentId";
+
         public static JsonValue Generate(Type inputType)
         {
             if (inputType == null) throw new ArgumentNullException(nameof(inputType));
             return BuildObjectSchema(inputType, 0, new HashSet<Type>());
+        }
+
+        /// <summary>
+        /// 给写工具的 schema 补上 <see cref="ExpectedDocumentParameter"/>。
+        ///
+        /// 写操作永远作用在**当前活动文档**上，而活动文档会在两次调用之间变：
+        /// 用户点了另一个窗口、上一步的另存把当前文件换掉了。
+        /// 带上这个参数，就能把"我以为在改哪个文档"表达出来，由服务端在真正动手前拦下来。
+        /// </summary>
+        public static JsonValue WithExpectedDocument(JsonValue schema)
+        {
+            if (schema == null || !schema.IsObject) return schema;
+
+            JsonValue properties;
+            if (!schema.TryGet("properties", out properties) || !properties.IsObject)
+            {
+                properties = JsonValue.NewObject();
+                schema.Set("properties", properties);
+            }
+
+            // 工具自己已经声明过同名参数就别覆盖它——那是工具的业务参数
+            if (properties.TryGet(ExpectedDocumentParameter, out _)) return schema;
+
+            properties.Set(ExpectedDocumentParameter, JsonValue.NewObject()
+                .Set("type", "string")
+                .Set("description",
+                    "前置条件：本次写入**必须**作用在这个文档上，来自 revit_list_documents 的 id " +
+                    "（或 revit_get_document_info 的 pathName）。活动文档不是它就直接拒绝，模型不会被改动。" +
+                    "用户随时可能在 Revit 里切换文档，另存也会把活动文档换成新文件——" +
+                    "凡是拿着上一步查到的构件 ID 做的写入，都该带上它"));
+
+            // 之前声明过"只接受空对象"的无参工具，现在多了这一个参数
+            schema.Remove("additionalProperties");
+
+            return schema;
         }
 
         private static JsonValue BuildObjectSchema(Type type, int depth, HashSet<Type> path)

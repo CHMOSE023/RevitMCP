@@ -23,6 +23,13 @@ namespace RevitMCP.Addin.Tools
                   "是/否类参数可用 true/false 或 是/否；ElementId 类参数（材质、标高这类）传目标构件的 ID，传 -1 或空字符串表示清空", Required = true)]
         public string Value { get; set; }
 
+        [McpParam("数值按哪种单位解释：projectUnits（默认，项目显示单位，和用户在 Revit 里敲进去一样）、" +
+                  "internal（Revit 内部单位：长度英尺、角度弧度）。" +
+                  "**工具不会在两者之间回退猜测**——按项目单位写不进去会直接报错，" +
+                  "而不是悄悄按内部单位写成 304.8 倍的值",
+                  AllowedValues = new[] { "projectUnits", "internal" })]
+        public string ValueMode { get; set; }
+
         [McpParam("影响构件数超过上限时，带上 true 表示确认后再执行")]
         public bool? Confirm { get; set; }
     }
@@ -85,6 +92,7 @@ namespace RevitMCP.Addin.Tools
             // 事务虽然能回滚，但"先全部检查通过再改"能让失败信息一次说全，
             // 而不是改到第三个才发现第七个的参数是只读的。
             var targets = Resolve(document, input, context);
+            var internalUnits = ParameterWriter.ParseInternalMode(input.ValueMode);
 
             var output = new SetParametersOutput { ParameterName = input.ParameterName };
             var total = targets.Count;
@@ -95,7 +103,7 @@ namespace RevitMCP.Addin.Tools
                 context.CancellationToken.ThrowIfCancellationRequested();
 
                 var before = ParameterWriter.DisplayOf(target.Parameter);
-                ParameterWriter.Write(target.Parameter, input.Value, target.Element);
+                ParameterWriter.Write(target.Parameter, input.Value, target.Element, internalUnits);
 
                 output.Elements.Add(new ParameterChange
                 {

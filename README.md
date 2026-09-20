@@ -20,7 +20,15 @@
 > · 仍缺路线图里点名的两项：`revit_load_family`（载入族）、
 >   `revit_export_image` 的取景控制。
 >
-> 共 69 个工具：33 个只读 + 36 个写（含 2 个默认关闭的逃生舱）。
+> **M10-D 正确性修复**（按《源码评估与改进报告》第一阶段）：
+> 楼板不再忽略 `levelId`（竖向约束写完读回来核对，对不上就整批回滚）、
+> 柱的底部偏移真的写进去、立面改用立面标记创建、
+> 房间/空间/面积标记走各自的专用 API、参数写入不再在项目单位与内部单位之间静默回退、
+> 写操作支持 `expectedDocumentId` 前置校验、`action: "new"` 支持一步建出可写的新项目、
+> 被忽略的 Revit 警告带上构件 ID、认不出来的模态对话框不再替用户点确定、
+> Origin 白名单按 URI 比对。逐条见 [docs/fix-log-m10d.md](docs/fix-log-m10d.md)。
+>
+> 共 70 个工具：34 个只读 + 36 个写（含 2 个默认关闭的逃生舱）。
 > 与 `revit-bridge-addin` 的逐条对照见 [docs/bridge-parity.md](docs/bridge-parity.md)。
 
 ---
@@ -96,7 +104,7 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 
 ## 现有工具
 
-68 个工具：**29 个只读 + 39 个写**。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
+70 个工具：**34 个只读 + 36 个写**（含 2 个默认关闭的逃生舱）。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
 
 ### 查看模型
 
@@ -121,6 +129,7 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_list_groups` | 组实例及其成员数、同类型实例数（改一个会联动几个）|
 | `revit_list_views` | 视图与图纸及其类型、比例、所在图纸 |
 | `revit_list_view_templates` | 视图样板及其适用的视图类型 |
+| `revit_list_view_family_types` | 视图族类型及其 ID——`revit_create_views` 的 `viewFamilyTypeId` 从这里来 |
 | `revit_get_sheet_contents` | 图纸上放了哪些视图、用什么图签、可写参数名有哪些 |
 | `revit_list_revisions` | 修订序列及其编号、日期、发布状态 |
 | `revit_read_schedule` | 把明细表读成表格数据 |

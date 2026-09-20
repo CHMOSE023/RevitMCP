@@ -104,6 +104,7 @@ namespace RevitMCP.Addin.Tools
 
             SurfaceCompat.CreateSurfaceResult result;
             ElementType usedType;
+            BuiltInParameter offsetParameter;
 
             switch (category)
             {
@@ -112,8 +113,7 @@ namespace RevitMCP.Addin.Tools
                         document, context, spec.TypeId, BuiltInCategory.OST_Floors, index);
                     result = Invoke(index, "楼板", () => SurfaceCompat.CreateFloor(
                         document, boundary, innerLoops, usedType, level, spec.Structural ?? false));
-                    if (offsetMm != 0)
-                        ApplyOffset(result.Element, BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM, offsetMm, context);
+                    offsetParameter = BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM;
                     break;
 
                 case BuiltInCategory.OST_Roofs:
@@ -121,8 +121,7 @@ namespace RevitMCP.Addin.Tools
                         document, context, spec.TypeId, BuiltInCategory.OST_Roofs, index);
                     result = Invoke(index, "屋顶", () => SurfaceCompat.CreateRoof(
                         document, boundary, innerLoops, (RoofType)usedType, level));
-                    if (offsetMm != 0)
-                        ApplyOffset(result.Element, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM, offsetMm, context);
+                    offsetParameter = BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM;
                     break;
 
                 case BuiltInCategory.OST_Ceilings:
@@ -135,14 +134,15 @@ namespace RevitMCP.Addin.Tools
                         document, context, spec.TypeId, BuiltInCategory.OST_Ceilings, index);
                     result = Invoke(index, "天花", () => SurfaceCompat.CreateCeiling(
                         document, boundary, innerLoops, usedType, level));
-                    if (offsetMm != 0)
-                        ApplyOffset(result.Element, BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM, offsetMm, context);
+                    offsetParameter = BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM;
                     break;
 
                 default:
                     throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
                         "面定位建模只支持 OST_Floors、OST_Roofs、OST_Ceilings，收到 " + category + "。");
             }
+
+            var actualOffsetMm = EnforceOffset(result.Element, offsetParameter, offsetMm, index);
 
             // 洞是轮廓自带的还是事后开的，在后续查询里是两种东西：
             // 后者会多出 Opening 构件，按类别查楼板时看不见它们
@@ -152,13 +152,20 @@ namespace RevitMCP.Addin.Tools
                     " 个洞是建完之后单独开的，模型里会多出同样数量的「洞口」构件。" +
                     "删除宿主时它们会跟着走，但按类别查询时不会出现在楼板/屋顶里。");
 
+            var levelElevationMm = Units.Round(Units.FromFeet(level.Elevation));
+
             return new CreatedElement
             {
                 Index = index,
                 Id = result.Element.Id.ToProtocolString(),
                 Category = category.ToString(),
                 Type = CreateSupport.SafeName(usedType),
-                Level = CreateSupport.SafeName(level)
+                Level = CreateSupport.SafeName(level),
+                LevelElevationMm = levelElevationMm,
+                BaseOffsetMm = actualOffsetMm,
+                ElevationMm = actualOffsetMm.HasValue
+                    ? (double?)Units.Round(levelElevationMm + actualOffsetMm.Value)
+                    : null
             };
         }
 
@@ -293,22 +300,33 @@ namespace RevitMCP.Addin.Tools
         }
 
         /// <summary>
-        /// 偏移设不上只警告：面已经建在正确的平面位置上了，
-        /// 为一个高度把整批回滚，代价远大于收益——但必须说出来。
+        /// 偏移**必须无条件写一遍，且写完读回来核对**。
+        ///
+        /// 这里曾经只在 <c>offsetMm != 0</c> 时才写，于是最常见的那种调用
+        /// （省略 baseOffset，指望构件落在标高上）反而是错的：
+        /// 边界被压平到项目绝对 Z=0 交给 <c>NewFloor</c>，Revit 便把
+        /// "草图平面与标高的高差"记成 <c>自标高的高度偏移 = 0 − 标高高程</c>，
+        /// 二层的板于是静默地落在零标高上——标高参数还是对的，几何却不对，
+        /// 查询接口和实际位置互相矛盾，只有量几何才看得出来。
+        ///
+        /// 高程不是可以"尽力而为"的属性：位置错了的板，比建不出来的板危险得多。
+        /// 所以写不上、或者读回来对不上，都让整批回滚。
         /// </summary>
-        private static void ApplyOffset(
-            Element element, BuiltInParameter id, double offsetMm, ToolExecutionContext<UIApplication> context)
+        /// <returns>读回来的实际偏移（毫米）。参数不存在时为 null。</returns>
+        private static double? EnforceOffset(
+            Element element, BuiltInParameter id, double offsetMm, int index)
         {
-            try
-            {
-                var parameter = element.get_Parameter(id);
-                if (parameter != null && !parameter.IsReadOnly && parameter.Set(Units.ToFeet(offsetMm))) return;
-            }
-            catch { /* 落到下面的警告 */ }
+            var actualMm = CreateSupport.SetLengthVerified(element, id, offsetMm, "标高偏移", index);
 
-            CreateSupport.Once(context,
-                "构件 " + element.Id.ToProtocolString() + " 的标高偏移没能设成 " + offsetMm +
-                " 毫米，它建在了标高平面上。");
+            // 参数不存在：这个类别/版本不按"标高 + 偏移"定位。
+            // 此时只有 offsetMm == 0 才谈得上"已经放对了"，非零请求必须报错而不是悄悄忽略。
+            if (!actualMm.HasValue && Math.Abs(offsetMm) > CreateSupport.LengthToleranceMm)
+                throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
+                    "这个构件没有标高偏移参数，baseOffset " +
+                    offsetMm.ToString("0.###", CultureInfo.InvariantCulture) +
+                    " 毫米无处可写。请把竖向位置改由 levelId 表达。");
+
+            return actualMm;
         }
 
         private static BuiltInCategory ParseCategoryAt(string raw, int index)
