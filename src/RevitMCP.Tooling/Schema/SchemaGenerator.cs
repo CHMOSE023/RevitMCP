@@ -22,6 +22,13 @@ namespace RevitMCP.Tooling.Schema
         /// </summary>
         public const string ExpectedDocumentParameter = "expectedDocumentId";
 
+        /// <summary>
+        /// 幂等键。和 <see cref="ExpectedDocumentParameter"/> 一样是管线级参数，
+        /// 不写进每个工具的 Input DTO——它表达的是"这次请求和上次是不是同一次"，
+        /// 不属于任何一个工具的业务。
+        /// </summary>
+        public const string RequestKeyParameter = "requestKey";
+
         public static JsonValue Generate(Type inputType)
         {
             if (inputType == null) throw new ArgumentNullException(nameof(inputType));
@@ -57,7 +64,18 @@ namespace RevitMCP.Tooling.Schema
                     "用户随时可能在 Revit 里切换文档，另存也会把活动文档换成新文件——" +
                     "凡是拿着上一步查到的构件 ID 做的写入，都该带上它"));
 
-            // 之前声明过"只接受空对象"的无参工具，现在多了这一个参数
+            if (!properties.TryGet(RequestKeyParameter, out _))
+                properties.Set(RequestKeyParameter, JsonValue.NewObject()
+                    .Set("type", "string")
+                    .Set("description",
+                        "幂等键，自己取一个本次任务内唯一的字符串。" +
+                        "**同一个键 + 同样的参数只会真的执行一次**：重复调用直接返回上次的回执，不会重复创建。" +
+                        "超时（TIMEOUT）后重试尤其要带上它——那时你无法确定上一次到底执行了没有，" +
+                        "而在 Revit 里重复创建最难发现：不报错、不产生警告、撤销栈里只是一步普通的创建。" +
+                        "键相同但参数不同会被拒绝（那通常是键被复用了）。" +
+                        "保留期为最近 200 次调用或 24 小时，且**进程重启后失效**"));
+
+            // 之前声明过"只接受空对象"的无参工具，现在多了这几个参数
             schema.Remove("additionalProperties");
 
             return schema;

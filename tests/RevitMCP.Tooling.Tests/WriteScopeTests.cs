@@ -27,16 +27,32 @@ namespace RevitMCP.Tooling.Tests
         /// <summary>模拟失败预处理器吞掉一条 Revit 警告。</summary>
         public string WarningToEmit { get; set; }
 
+        /// <summary>作用域收到的取消信号。真实实现在提交前要再查它一次。</summary>
+        public CancellationToken LastToken { get; private set; }
+
         public TResult Run<TResult>(FakeHost host, WriteScopeInfo info, Func<TResult> work)
         {
             Entered.Add(info.ToolName);
+            LastToken = info.CancellationToken;
             if (WarningToEmit != null) info.Warnings.Add(WarningToEmit);
 
             try
             {
                 var result = work();
+
+                // 与 RevitWriteScope 同样的语义：提交前最后查一次取消
+                if (info.CancellationToken.IsCancellationRequested)
+                {
+                    RolledBack++;
+                    throw new OperationCanceledException(info.CancellationToken);
+                }
+
                 Committed++;
                 return result;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch
             {
@@ -338,6 +354,60 @@ namespace RevitMCP.Tooling.Tests
 
             Assert.False(result.IsError);
             Assert.Equal("7", result.StructuredContent["message"].AsString);
+        }
+
+        [Fact]
+        public async Task CancellationReachesTheWriteScope()
+        {
+            // 提交前的最后一次取消检查需要拿到 token。管线不把它传进作用域的话，
+            // 真实实现里那句检查永远是 false——一次已经被放弃的请求照样会提交，
+            // 而发起方永远不会知道它成功了
+            var registry = new ToolRegistry<FakeHost>();
+            registry.RegisterAssembly(typeof(GreetTool).Assembly);
+
+            var scope = new RecordingWriteScope();
+            var pipeline = new ToolPipeline<FakeHost>(
+                registry,
+                new ImmediateDispatcher(new FakeHost()),
+                new ToolPipelineOptions { WriteEnabled = () => true },
+                scope);
+
+            using (var source = new CancellationTokenSource())
+            {
+                var arguments = JsonValue.NewObject().Set("title", "新标题");
+                await pipeline.CallToolAsync("test_mutate", arguments, source.Token);
+
+                Assert.True(scope.LastToken.CanBeCanceled, "写作用域必须拿到调用方的取消信号。");
+                Assert.False(scope.LastToken.IsCancellationRequested);
+                Assert.Equal(1, scope.Committed);
+            }
+        }
+
+        [Fact]
+        public async Task AlreadyCancelledCallDoesNotCommit()
+        {
+            var registry = new ToolRegistry<FakeHost>();
+            registry.RegisterAssembly(typeof(GreetTool).Assembly);
+
+            var scope = new RecordingWriteScope();
+            var host = new FakeHost { DocumentTitle = "原样" };
+            var pipeline = new ToolPipeline<FakeHost>(
+                registry,
+                new ImmediateDispatcher(host),
+                new ToolPipelineOptions { WriteEnabled = () => true },
+                scope);
+
+            using (var source = new CancellationTokenSource())
+            {
+                source.Cancel();
+
+                var arguments = JsonValue.NewObject().Set("title", "新标题");
+
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    () => pipeline.CallToolAsync("test_mutate", arguments, source.Token));
+
+                Assert.Equal(0, scope.Committed);
+            }
         }
     }
 

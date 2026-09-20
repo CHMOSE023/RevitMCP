@@ -10,6 +10,7 @@ using RevitMCP.Addin.Configuration;
 using RevitMCP.Addin.Diagnostics;
 using RevitMCP.Addin.Dispatcher;
 using RevitMCP.Addin.Execution;
+using RevitMCP.Addin.Guide;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using RevitMCP.Addin.Tools;
@@ -98,7 +99,8 @@ namespace RevitMCP.Addin.Server
                             ServerVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString(3),
                             Instructions = BuildInstructions()
                         },
-                        BuildToolPipeline());
+                        BuildToolPipeline(),
+                        new GuideResourceCatalog());
 
                     var handler = new McpHttpHandler(
                         mcp,
@@ -207,6 +209,10 @@ namespace RevitMCP.Addin.Server
         {
             var registry = new ToolRegistry<UIApplication>();
             var count = registry.RegisterAssembly(typeof(ServerHost).Assembly, _config.DisabledTools);
+            var journal = new OperationJournal();
+
+            // 状态查询工具拿不到管线实例，日志从这里递给它
+            GetOperationStatusTool.Journal = journal;
             Log.Info("已注册 " + count + " 个工具：" + string.Join("、", registry.Tools.Select(t => t.Name).ToArray()));
 
             return new ToolPipeline<UIApplication>(registry, _dispatcher, new ToolPipelineOptions
@@ -220,7 +226,9 @@ namespace RevitMCP.Addin.Server
             // 写作用域只作用于非只读工具：开事务、装失败预处理、拦模态框（M4）
             new RevitWriteScope(() => _config.AutoConfirmUnknownDialogs),
             // 活动文档的身份：用户随时可能切换文档，切换后调用方手里的 ID 全部失效（M7）
-            DescribeActiveDocument);
+            DescribeActiveDocument,
+            // 操作日志：幂等重放与超时后的状态查询都靠它（F09）
+            journal);
         }
 
         /// <summary>
@@ -262,8 +270,17 @@ namespace RevitMCP.Addin.Server
             catch { return null; }
         }
 
+        /// <summary>
+        /// 给客户端的开场白。**第一句就指向建模指引**——
+        /// 这是唯一一处"客户端一连上就会看到"的文字，
+        /// 把它用来说"有一份指引、在哪读"，比说任何别的都划算。
+        /// </summary>
         private string BuildInstructions() =>
             "操作当前在 Revit " + RevitVersionInfo.Year + " 中打开的模型。" +
+            "**建模前先调用 revit_get_modeling_guide 读一遍建模指引**" +
+            "（同一份内容也发布为 MCP 资源 " + ModelingGuide.UriPrefix + "*）：" +
+            "这套工具的失败模式不是调用报错，而是调用成功、模型不对，" +
+            "指引里每一条都对应一次真实的翻车。" +
             "写操作默认被禁用，需用户在 Revit 的 RevitMCP 面板上手动开启。";
 
         private static void LogFrom(string message, Exception ex)

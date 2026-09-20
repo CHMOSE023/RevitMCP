@@ -267,9 +267,89 @@ Revit 固定回一句 `The ViewFamilyType must be a Section ViewFamily`——任
 - `volumeCbm` 在项目没打开「面积和体积计算 → 体积」时报 null 而不是 0：
   那是"项目没在算体积"，不是"这个房间体积为 0"。
 
+---
+
+# M10-F 建模指引与提交前取消（F15 + F09 的一小块）
+
+## 指引由服务自己发（MCP 资源 + 工具 + instructions）
+
+报告 §11.4 说"仅把 SKILL.md 放进源码目录不构成自动生效保证"——
+本来的做法是让用户往客户端的 skills 目录里拷一份。**那条路有个更根本的问题**：
+拷贝会过期。装漏了没人发现（Agent 照样能调工具，只是按自己的习惯乱来）；
+装旧了更糟——它会对着**已经修好的缺陷**执行补救动作，而一切看起来都在正常工作。
+
+所以改成**指引跟着 DLL 走**：`skills/revit-modeling/**.md` 在编译时嵌进程序集
+（csproj 里的 `EmbeddedResource`），服务通过三条路发布同一份内容：
+
+| 路径 | 实现 | 为什么要有它 |
+|---|---|---|
+| 工具 `revit_get_modeling_guide` | `ModelingGuideTool`，只读、不需要打开文档 | `tools/list` 人人都加载，这是唯一"Agent 一定看得见"的路 |
+| MCP 资源 `revitmcp://guide/*` | 协议层新增 `resources/list` / `resources/read` + `IResourceCatalog` | 支持资源的客户端更省上下文：按 URI 取，不占工具清单 |
+| `instructions` 开场白 | `ServerHost.BuildInstructions()` 第一句 | 客户端把它放进系统提示，等于默认就知道有这份东西 |
+
+协议层的资源支持是新加的（此前只有 `tools/*`）：
+`resources` 能力**只在真的有资源时才声明**——声明了却返回空，客户端会以为是自己问错了。
+读不到的 URI 会把可用 URI 一并列出来，省得调用方去猜拼写。
+
+Server.Tests 新增 5 项覆盖这条链路（列、读、未知 URI、能力声明、没有资源时方法不存在）。
+
+## `skills/revit-modeling`（新增，F15 首版）
+
+报告 §11 要的那份东西：**工具 schema 说的是"可以怎么调"，这份指引说的是"何时调、依赖什么、怎么判断做完了"。**
+
+```
+skills/revit-modeling/
+├── SKILL.md                     八条硬规则 + 阶段表（入口，短）
+└── references/
+    ├── modeling-sequence.md     依赖图、任务分支、批次大小
+    ├── validation-checklist.md  每类构件建完要量什么
+    ├── recovery-guide.md        失败后先判断"执行了没有"，按错误码处置
+    └── version-limitations.md   已修复的坑（别再绕）与仍存在的限制
+```
+
+内容全部来自这两轮实测——每条规则对应一次"调用成功、警告为 0、几何是错的"。
+入口刻意短，不罗列 72 个工具的 schema；参考文件按需读。
+
+`version-limitations.md` 里那张"已修复"表是**必须跟着代码走**的：
+M10-D 修掉的那些坑（楼板标高、柱底偏移、立面、房间标记、单位回退）
+都已经从"仍存在"挪到"已修复"。不挪的后果是 Agent 永远在执行不必要的补救动作——
+比如建完楼板还去"把偏移改回 0"，而那早就不需要了。
+
+**放在仓库里不等于会被加载**，安装方式与"开发插件 vs 用插件建模"的区分见 `skills/README.md`。
+
+## 操作状态与幂等（F09 主体）
+
+设计与理由见 [design-f09-operation-state.md](design-f09-operation-state.md)，那三个待拍板项定为：
+`requestKey` 不强制、保留 200 条 / 24 小时不落盘、`operationId` 注入 `structuredContent`。
+
+**真实 Revit 验收（2026-09-20，Revit 2019）**：同一个 `requestKey` 建两次标高，
+**模型里只有一条**；同键异参返回 `IDEMPOTENCY_CONFLICT` 且什么都没建出来；
+`revit_get_operation_status` 查到 `committed` 与 `nextStep`；查一个不存在的 ID 返回
+`unknown` 并指向 `revit_get_model_changes` / `revit_query_elements`——
+**"查不到 ≠ 没发生过"**，这一条单独断言。
+
+**超时路径只有单测。** 真机上造不出超时：74 个工具**全部显式声明了 `TimeoutSeconds`**，
+`defaultToolTimeoutSeconds` 根本轮不到生效，而为了触发它去凑一个几千构件的慢操作
+既慢又脏、还不稳定。改为注入一个直接抛 `DispatchTimeoutException` 的调度器，
+断言状态落成 `unknown`、报错文本带 `operationId`、并写着"不要直接重试"；
+同时补了 `REVIT_BUSY` → `cancelled` 的对照——这两个状态绝不能混：
+一个是"可以放心重发"，一个是"千万别重发"。
+
+## 提交前的取消检查（F09 的一小块）
+
+`WriteScopeInfo` 现在带 `CancellationToken`，`RevitWriteScope` 在 `Commit()` 之前再查一次，
+已取消就回滚并抛 `OperationCanceledException`。
+
+原先只有工具自己的循环里有检查点——而一个只调一次 Revit API 的工具从头到尾没有检查点，
+客户端在这期间断开，改动照样提交：**一次已经被放弃的请求，在用户模型里留下了改动，
+而发起方永远不会知道它成功了。**
+
+F09 的其余部分（`operationId`、幂等键、操作状态查询、崩溃恢复边界）没做——
+那要改的是管线的执行语义，值得单独设计。
+
 ## 没做的
 
-- **F09**（操作状态、幂等键、提交前统一取消检查）、**F10**（回执双份数据与查询成本）、
+- **F09 的其余部分**（操作状态、幂等键、崩溃恢复边界；提交前取消检查已在 M10-F 补上）、**F10**（回执双份数据与查询成本）、
   **F13**（几何语义回归集的其余部分）、**F14**（载入族、原生楼梯栏杆、房间竖向约束、导出取景）、
   **F15**（建模 skill）——都是第二、三阶段的内容，工作量与本批不在一个量级。
 - **F07 的严格模式回滚**：把重叠这类质量警告升级为回滚，需要一个贯穿配置与写作用域的开关，

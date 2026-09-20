@@ -75,6 +75,14 @@ namespace RevitMCP.Tooling
         private readonly IWriteScope<TContext> _writeScope;
         private readonly Func<TContext, ContextIdentity> _contextIdentity;
 
+        /// <summary>
+        /// 操作日志：每次写调用走到哪一步、结果是什么。幂等重放与状态查询都靠它。
+        /// 只在内存里——理由见 docs/design-f09-operation-state.md §4。
+        /// </summary>
+        public OperationJournal Journal => _journal;
+
+        private readonly OperationJournal _journal;
+
         // 上一次调用时的上下文身份。跨请求的进程内状态，与客户端无关——
         // "活动文档换了"是全局事实，不属于某一个会话
         private readonly object _identityLock = new object();
@@ -86,13 +94,15 @@ namespace RevitMCP.Tooling
             IWorkDispatcher<TContext> dispatcher,
             ToolPipelineOptions options = null,
             IWriteScope<TContext> writeScope = null,
-            Func<TContext, ContextIdentity> contextIdentity = null)
+            Func<TContext, ContextIdentity> contextIdentity = null,
+            OperationJournal journal = null)
         {
             _registry = registry ?? throw new ArgumentNullException(nameof(registry));
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _options = options ?? new ToolPipelineOptions();
             _writeScope = writeScope ?? new PassthroughWriteScope<TContext>();
             _contextIdentity = contextIdentity;
+            _journal = journal ?? new OperationJournal();
         }
 
         /// <summary>
@@ -126,25 +136,25 @@ namespace RevitMCP.Tooling
         }
 
         /// <summary>
-        /// 把 expectedDocumentId 从 arguments 里摘出来。
+        /// 把一个管线级参数从 arguments 里摘出来。
         ///
         /// 摘而不是留：工具的入参绑定是严格的，留着它每个写工具都会报"未知参数"。
-        /// 原对象不改动——同一个 JsonValue 可能还要用于审计。
+        /// 原对象不改动——同一个 JsonValue 还要用于审计与幂等指纹。
         /// </summary>
-        private static JsonValue TakeExpectedDocument(JsonValue arguments, out string expected)
+        private static JsonValue Take(JsonValue arguments, string name, out string taken)
         {
-            expected = null;
+            taken = null;
             if (arguments == null || !arguments.IsObject) return arguments;
 
             JsonValue value;
-            if (!arguments.TryGet(SchemaGenerator.ExpectedDocumentParameter, out value)) return arguments;
+            if (!arguments.TryGet(name, out value)) return arguments;
 
-            if (value != null && value.Kind == JsonKind.String) expected = value.AsString;
+            if (value != null && value.Kind == JsonKind.String) taken = value.AsString;
 
             var copy = JsonValue.NewObject();
             foreach (var key in arguments.Keys)
             {
-                if (key == SchemaGenerator.ExpectedDocumentParameter) continue;
+                if (key == name) continue;
 
                 JsonValue item;
                 if (arguments.TryGet(key, out item)) copy.Set(key, item);
@@ -232,10 +242,16 @@ namespace RevitMCP.Tooling
 
             entry.ReadOnly = tool.IsReadOnly;
 
-            // 写工具的 expectedDocumentId 不属于任何一个工具的 Input DTO：
+            // 写工具的 expectedDocumentId / requestKey 不属于任何一个工具的 Input DTO：
             // 先摘出来，免得严格绑定把它当成未知参数拒掉
             string expectedDocument = null;
-            if (!tool.IsReadOnly) arguments = TakeExpectedDocument(arguments, out expectedDocument);
+            string requestKey = null;
+
+            if (!tool.IsReadOnly)
+            {
+                arguments = Take(arguments, SchemaGenerator.ExpectedDocumentParameter, out expectedDocument);
+                arguments = Take(arguments, SchemaGenerator.RequestKeyParameter, out requestKey);
+            }
 
             object input;
             try
@@ -255,6 +271,20 @@ namespace RevitMCP.Tooling
                     "工具 " + name + " 会修改模型，但当前处于浏览模式。" +
                     "请让用户在 Revit 的 RevitMCP 选项卡上，把「操作模式」从「浏览模型」切换到「修改模型」。");
             }
+
+            // 幂等：同键同参直接还上次的回执，一个字节都不执行。
+            // 这一步必须在写保护检查**之后**——被写保护拒掉的调用不该登记成一次操作
+            OperationRecord replayed;
+            var idempotency = CheckIdempotency(name, requestKey, expectedDocument, arguments, out replayed);
+            if (idempotency != null) return Failure(entry, ToolOutcome.Rejected, idempotency.Item1, idempotency.Item2);
+            if (replayed != null) return Replay(entry, replayed);
+
+            // 写工具一律登记：即便没给 requestKey，也要有 operationId——
+            // 超时那一刻，它是调用方唯一能拿来查证的东西
+            var operation = tool.IsReadOnly
+                ? null
+                : _journal.Begin(name, requestKey, IdentityOf(name, requestKey, expectedDocument, arguments),
+                    expectedDocument);
 
             var timeout = TimeSpan.FromSeconds(Math.Max(1,
                 tool.Metadata.TimeoutSeconds > 0
@@ -276,7 +306,8 @@ namespace RevitMCP.Tooling
 
             try
             {
-                var scopeInfo = new WriteScopeInfo(name, new ConcurrentQueueAdapter(warnings));
+                var scopeInfo = new WriteScopeInfo(
+                    name, new ConcurrentQueueAdapter(warnings), cancellationToken);
 
                 var output = await _dispatcher.InvokeAsync(
                     host =>
@@ -299,6 +330,10 @@ namespace RevitMCP.Tooling
                                     "排队期间用户把「操作模式」切回了「浏览模型」，这次写入没有执行。");
                         }
 
+                        // 前置条件都过了才算"跑起来了"：在这之前失败的，模型一个字节都没动过，
+                        // 状态该是 failed 而不是 rolledBack
+                        _journal.MarkRunning(operation);
+
                         var hosted = WithHost(context, host);
 
                         // 只读工具不开事务：既省一次 Revit 事务开销，
@@ -316,6 +351,7 @@ namespace RevitMCP.Tooling
                 CommitIdentity(identity);
 
                 var payload = AttachWarnings(JsonMapper.ToJson(output), warnings);
+                payload = AttachOperationId(payload, operation);
 
                 entry.Outcome = ToolOutcome.Succeeded;
                 entry.WarningCount = warnings.Count;
@@ -323,11 +359,21 @@ namespace RevitMCP.Tooling
                 var reporter = output as IReportsAffectedElements;
                 if (reporter != null) entry.AffectedElements = reporter.AffectedElements;
 
+                var text = payload.ToJson(indented: true);
+                _journal.Complete(operation, OperationState.Committed, resultJson: payload.ToJson());
+
                 // 规范建议：返回 structuredContent 的同时，也把序列化后的 JSON 放进文本块
-                return ToolCallResult.Ok(payload.ToJson(indented: true), payload);
+                return ToolCallResult.Ok(text, payload);
             }
             catch (OperationCanceledException)
             {
+                // 排队期间被取消 vs 执行中被取消：前者模型没被碰过
+                _journal.Complete(operation,
+                    operation != null && operation.State == OperationState.Queued
+                        ? OperationState.Cancelled
+                        : OperationState.RolledBack,
+                    McpDomainError.Timeout, "调用被取消。");
+
                 throw;   // 客户端断开，由传输层处理
             }
             catch (ToolFailureException ex)
@@ -336,12 +382,16 @@ namespace RevitMCP.Tooling
                 var switched = PeekContextSwitch(identity);
                 CommitIdentity(identity);
 
+                // 跑起来之后失败 = 事务已回滚；跑起来之前失败 = 压根没进事务
+                Settle(operation, ex.Code, ex.Message);
+
                 return Failure(entry, ToolOutcome.Failed, ex.Code,
                     switched == null ? ex.Message : ex.Message + "\n注意：" + switched);
             }
             catch (ToolInputException ex)
             {
                 // 有些校验只有拿到 Revit 上下文才做得了
+                Settle(operation, McpDomainError.InvalidParameter, ex.Message);
                 return Failure(entry, ToolOutcome.Failed, McpDomainError.InvalidParameter, ex.Message);
             }
             catch (RevitBusyException ex)
@@ -349,21 +399,30 @@ namespace RevitMCP.Tooling
                 _options.Log(name + "：" + ex.Message, null);
                 // 工作从未开始，模型没被碰过——记 Rejected 而非 Failed。
                 // 审计上的这条区分和 REVIT_BUSY / TIMEOUT 的区分是同一件事
+                _journal.Complete(operation, OperationState.Cancelled, McpDomainError.RevitBusy, ex.Message);
                 return Failure(entry, ToolOutcome.Rejected, McpDomainError.RevitBusy, ex.Message);
             }
             catch (DispatchTimeoutException ex)
             {
                 _options.Log(name + "：" + ex.Message, null);
-                // 已经跑起来了，模型可能已被部分修改
-                return Failure(entry, ToolOutcome.Failed, McpDomainError.Timeout, ex.Message);
+
+                // **结果不确定**：工作已经开始，主线程还在跑，谁也不知道它会不会提交。
+                // 这正是 operationId 存在的那一刻——把它交出去，让调用方去查证而不是去重试
+                _journal.Complete(operation, OperationState.Unknown, McpDomainError.Timeout, ex.Message);
+
+                return Failure(entry, ToolOutcome.Failed, McpDomainError.Timeout,
+                    ex.Message + Uncertain(operation));
             }
             catch (DispatchStoppedException ex)
             {
+                _journal.Complete(operation, OperationState.Unknown, McpDomainError.ServerStopped, ex.Message);
                 return Failure(entry, ToolOutcome.Rejected, McpDomainError.ServerStopped, ex.Message);
             }
             catch (Exception ex)
             {
                 _options.Log(name + " 执行失败。", ex);
+                Settle(operation, null, ex.Message);
+
                 // 不把堆栈丢给模型：它既看不懂也帮不上忙，只会占上下文
                 return Failure(entry, ToolOutcome.Failed, null, name + " 执行失败：" + ex.Message);
             }
@@ -421,6 +480,156 @@ namespace RevitMCP.Tooling
             public void Insert(int index, string item) => throw new NotSupportedException();
             public bool Remove(string item) => throw new NotSupportedException();
             public void RemoveAt(int index) => throw new NotSupportedException();
+        }
+
+        // ---------- 幂等与操作状态 ----------
+
+        /// <summary>
+        /// 这次调用的身份指纹：工具 + 幂等键 + 目标文档 + 规范化后的参数。
+        ///
+        /// 参数要走**规范化**序列化：客户端重试时重新序列化一遍，key 的顺序很可能变
+        /// （多数语言的字典不保证顺序），拿普通 JSON 去比就会把同一次请求判成不同的请求。
+        /// 目标文档进指纹：同一批参数打到另一个文档上是**另一次操作**，结果不能复用。
+        /// </summary>
+        private static string IdentityOf(string name, string requestKey, string expectedDocument, JsonValue arguments)
+        {
+            return JsonCanonical.Fingerprint(
+                name, requestKey, expectedDocument,
+                JsonCanonical.Write(arguments ?? JsonValue.NewObject()));
+        }
+
+        /// <summary>
+        /// 幂等检查。返回非 null 表示要直接拒绝（错误码 + 文案）；
+        /// <paramref name="replay"/> 非 null 表示要把上次的回执原样还回去。
+        /// </summary>
+        private Tuple<string, string> CheckIdempotency(
+            string name, string requestKey, string expectedDocument, JsonValue arguments,
+            out OperationRecord replay)
+        {
+            replay = null;
+            if (string.IsNullOrWhiteSpace(requestKey)) return null;
+
+            var previous = _journal.FindByRequestKey(requestKey);
+            if (previous == null) return null;
+
+            var identity = IdentityOf(name, requestKey, expectedDocument, arguments);
+
+            if (!string.Equals(previous.IdentityHash, identity, StringComparison.Ordinal))
+                return Tuple.Create(McpDomainError.IdempotencyConflict,
+                    "requestKey \"" + requestKey + "\" 上次用在另一组参数上（操作 " + previous.OperationId +
+                    "，工具 " + previous.ToolName + "，" + previous.QueuedAtUtc.ToString("HH:mm:ss") +
+                    " UTC，状态 " + State(previous.State) + "）。" +
+                    "**这次没有执行。**同一个键必须配同一份参数——" +
+                    "键被复用却改了参数，执行下去会造出一个谁都没预期的东西。换一个 requestKey。");
+
+            if (!previous.IsTerminal)
+                return Tuple.Create(McpDomainError.OperationInFlight,
+                    "requestKey \"" + requestKey + "\" 的上一次调用（" + previous.OperationId +
+                    "）还没结束，这次没有执行。用 revit_get_operation_status 查它，别另发一次。");
+
+            replay = previous;
+            return null;
+        }
+
+        /// <summary>把上次的结果原样还回去，并说清楚"这是重放，没有再执行一次"。</summary>
+        private static ToolCallResult Replay(ToolAuditEntry entry, OperationRecord previous)
+        {
+            entry.Outcome = ToolOutcome.Succeeded;
+
+            var note = "这是重放：requestKey \"" + previous.RequestKey + "\" 已经执行过（操作 " +
+                       previous.OperationId + "，" + previous.QueuedAtUtc.ToString("HH:mm:ss") +
+                       " UTC，状态 " + State(previous.State) + "），**本次没有再执行一遍**。";
+
+            if (previous.State != OperationState.Committed)
+            {
+                // 上次就没成功：不能装作成功，但也不能假装没发生过
+                return Failure(entry, ToolOutcome.Rejected,
+                    previous.ErrorCode ?? McpDomainError.IdempotencyConflict,
+                    note + " 上次的结果是：" + (previous.ErrorMessage ?? "（没有记录）") +
+                    " 要重来请换一个 requestKey。");
+            }
+
+            if (previous.ResultJson == null)
+                return ToolCallResult.Ok(
+                    note + " 上次的回执太大没有保留，" +
+                    (previous.AffectedElementIds.Count > 0
+                        ? "涉及构件：" + string.Join("、", previous.AffectedElementIds.ToArray())
+                        : "请用 revit_query_elements 查证实际结果。"));
+
+            JsonValue payload;
+            try { payload = JsonValue.Parse(previous.ResultJson); }
+            catch { return ToolCallResult.Ok(note + " 上次的回执无法还原，请用 revit_query_elements 查证。"); }
+
+            if (payload.IsObject) AppendWarning(payload, note);
+
+            return ToolCallResult.Ok(payload.ToJson(indented: true), payload);
+        }
+
+        /// <summary>
+        /// 把 operationId 挂进回执。
+        ///
+        /// 放 structuredContent 而不是 `_meta`：有些客户端会把 `_meta` 直接丢掉，
+        /// 而这个字段恰恰在超时那一刻最值钱。代价是每个写回执多约 30 字节。
+        /// </summary>
+        private static JsonValue AttachOperationId(JsonValue payload, OperationRecord operation)
+        {
+            if (operation == null || payload == null || !payload.IsObject) return payload;
+
+            JsonValue existing;
+            if (payload.TryGet("operationId", out existing)) return payload;   // 工具自己有同名字段就不动它
+
+            return payload.Set("operationId", operation.OperationId);
+        }
+
+        private static void AppendWarning(JsonValue payload, string note)
+        {
+            JsonValue warnings;
+            if (payload.TryGet("warnings", out warnings) && warnings.IsArray)
+            {
+                warnings.Add(JsonValue.String(note));
+                return;
+            }
+
+            var array = JsonValue.NewArray();
+            array.Add(JsonValue.String(note));
+            payload.Set("warnings", array);
+        }
+
+        /// <summary>
+        /// 跑起来之后失败 = 事务已回滚（模型原样）；跑起来之前失败 = 压根没进事务。
+        /// 两者对调用方的意义不同：前者可以原样重试，后者得先把前置条件弄对。
+        /// </summary>
+        private void Settle(OperationRecord operation, string code, string message)
+        {
+            if (operation == null) return;
+
+            _journal.Complete(operation,
+                operation.State == OperationState.Running ? OperationState.RolledBack : OperationState.Failed,
+                code, message);
+        }
+
+        private static string Uncertain(OperationRecord operation)
+        {
+            if (operation == null) return string.Empty;
+
+            return "\noperationId=" + operation.OperationId +
+                   "\n**结果不确定，不要直接重试。** 先用 revit_get_operation_status 查这个 ID；" +
+                   "状态若是 unknown，再用 revit_get_model_changes 或按类别、位置查一遍那批构件——" +
+                   "在 Revit 里重复创建最难发现：不报错、不产生警告、撤销栈里只是一步普通的创建。";
+        }
+
+        private static string State(OperationState state)
+        {
+            switch (state)
+            {
+                case OperationState.Queued: return "排队中";
+                case OperationState.Running: return "执行中";
+                case OperationState.Committed: return "已提交";
+                case OperationState.RolledBack: return "已回滚";
+                case OperationState.Failed: return "失败（未进入事务）";
+                case OperationState.Cancelled: return "已取消（未执行）";
+                default: return "未知";
+            }
         }
 
         private static ToolCallResult Failure(

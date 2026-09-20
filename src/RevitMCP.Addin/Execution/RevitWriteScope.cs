@@ -62,6 +62,14 @@ namespace RevitMCP.Addin.Execution
                     throw;
                 }
 
+                // 提交前最后一次检查：工具循环里的检查点覆盖不到所有路径，
+                // 而"客户端已经放弃、模型却被改了"是最说不清楚的一种结果
+                if (info.CancellationToken.IsCancellationRequested)
+                {
+                    SafeRollBack(transaction, info.ToolName);
+                    throw new OperationCanceledException(info.CancellationToken);
+                }
+
                 var status = transaction.Commit();
 
                 if (preprocessor.RolledBackDueToError)

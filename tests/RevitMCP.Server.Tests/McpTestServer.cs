@@ -21,7 +21,9 @@ namespace RevitMCP.Server.Tests
 
         private readonly MiniHttpServer _http;
 
-        public McpTestServer(Action<McpHttpOptions> configure = null, IToolCatalog catalog = null)
+        public McpTestServer(
+            Action<McpHttpOptions> configure = null, IToolCatalog catalog = null,
+            IResourceCatalog resources = null)
         {
             var options = new McpHttpOptions
             {
@@ -32,7 +34,8 @@ namespace RevitMCP.Server.Tests
 
             var server = new McpServer(
                 new McpServerOptions { ServerName = "RevitMCP", ServerVersion = "0.1.0" },
-                catalog ?? new EmptyToolCatalog());
+                catalog ?? new EmptyToolCatalog(),
+                resources);
 
             _http = new MiniHttpServer(new McpHttpHandler(server, options).HandleAsync);
 

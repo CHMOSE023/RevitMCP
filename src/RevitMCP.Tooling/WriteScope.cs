@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace RevitMCP.Tooling
 {
@@ -9,10 +10,26 @@ namespace RevitMCP.Tooling
     public sealed class WriteScopeInfo
     {
         public WriteScopeInfo(string toolName, IList<string> warnings)
+            : this(toolName, warnings, CancellationToken.None)
+        {
+        }
+
+        public WriteScopeInfo(string toolName, IList<string> warnings, CancellationToken cancellationToken)
         {
             ToolName = toolName ?? string.Empty;
             Warnings = warnings ?? new List<string>();
+            CancellationToken = cancellationToken;
         }
+
+        /// <summary>
+        /// 取消信号。**写作用域必须在提交之前再查一次**。
+        ///
+        /// 工具循环里的检查覆盖不到所有路径：一个只调一次 Revit API 的工具，
+        /// 从进入到结束根本没有检查点。客户端在这期间断开，此前的行为是照样提交——
+        /// 于是一次已经被放弃的请求，仍然在用户的模型里留下了改动，
+        /// 而发起方永远不会知道它成功了。
+        /// </summary>
+        public CancellationToken CancellationToken { get; }
 
         /// <summary>工具名。用于事务命名，让用户在撤销栈里认得出这一步是谁做的。</summary>
         public string ToolName { get; }

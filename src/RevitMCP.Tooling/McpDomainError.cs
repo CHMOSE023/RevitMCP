@@ -36,6 +36,17 @@ namespace RevitMCP.Tooling
         /// </summary>
         public const string WrongDocument = "WRONG_DOCUMENT";
 
+        /// <summary>
+        /// 同一个 requestKey 配了不一样的参数。
+        ///
+        /// 这几乎总是调用方的 bug——键被复用了。当成新请求执行会造出一个谁都没预期的东西，
+        /// 所以宁可拒绝，并把上一次那条操作的 ID 与时间一起给出去。
+        /// </summary>
+        public const string IdempotencyConflict = "IDEMPOTENCY_CONFLICT";
+
+        /// <summary>同一个 requestKey 的上一次调用还没结束。让调用方去查状态，而不是排队等它。</summary>
+        public const string OperationInFlight = "OPERATION_IN_FLIGHT";
+
         public static string Format(string code, string message) => code + ": " + message;
     }
 }

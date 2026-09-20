@@ -24,4 +24,32 @@
     <Reference Include="WindowsBase" />
     <Reference Include="System.Xaml" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      建模指引随程序集发布：MCP 资源（resources/read）与 revit_get_modeling_guide 都从这里读。
+
+      **嵌进 DLL 而不是按路径读文件**，是为了让指引和工具的实际行为永远是同一个版本。
+      装漏了没人发现；装旧了更糟——Agent 会对着已经修好的缺陷执行补救动作，
+      而一切看起来都在正常工作。
+
+      内容源文件在 skills/revit-modeling/，改内容改那边，这里只负责打包。
+    -->
+    <!--
+      逐个列出而不用通配符：通配符匹配不到文件时**不报错**，
+      于是少一份参考文件也能构建成功，只是发出去的指引缺了一节——
+      而那正是"看起来在正常工作"的那类问题。列成字面路径，文件被改名或删掉时构建当场失败。
+      这份清单与 ModelingGuide.FileNames 一一对应，加新章节要同时改两处。
+    -->
+    <EmbeddedResource Include="..\..\skills\revit-modeling\SKILL.md"
+                      LogicalName="RevitMCP.Addin.Guide.SKILL.md" />
+    <EmbeddedResource Include="..\..\skills\revit-modeling\references\modeling-sequence.md"
+                      LogicalName="RevitMCP.Addin.Guide.modeling-sequence.md" />
+    <EmbeddedResource Include="..\..\skills\revit-modeling\references\validation-checklist.md"
+                      LogicalName="RevitMCP.Addin.Guide.validation-checklist.md" />
+    <EmbeddedResource Include="..\..\skills\revit-modeling\references\recovery-guide.md"
+                      LogicalName="RevitMCP.Addin.Guide.recovery-guide.md" />
+    <EmbeddedResource Include="..\..\skills\revit-modeling\references\version-limitations.md"
+                      LogicalName="RevitMCP.Addin.Guide.version-limitations.md" />
+  </ItemGroup>
 </Project>

@@ -25,11 +25,37 @@ namespace RevitMCP.Protocol.Mcp
     {
         private readonly McpServerOptions _options;
         private readonly IToolCatalog _tools;
+        private readonly IResourceCatalog _resources;
 
-        public McpServer(McpServerOptions options, IToolCatalog tools)
+        public McpServer(McpServerOptions options, IToolCatalog tools, IResourceCatalog resources = null)
         {
             _options = options ?? new McpServerOptions();
             _tools = tools ?? new EmptyToolCatalog();
+            _resources = resources ?? new EmptyResourceCatalog();
+        }
+
+        /// <summary>
+        /// 有没有资源可发布。没有就不声明这份能力，也不接受 resources/*。
+        ///
+        /// **必须吞掉异常。** 这个属性被 <see cref="IsKnownMethod"/> 调用，
+        /// 而那个方法在传输层是在 try/catch **之外**跑的：
+        /// 目录实现一抛异常，每一个请求（包括 ping 和 tools/call）都会变成 500，
+        /// 整个服务因为一份可有可无的文档而瘫掉。资源是锦上添花，不能是单点故障。
+        /// </summary>
+        private bool HasResources
+        {
+            get
+            {
+                try
+                {
+                    var list = _resources.ListResources();
+                    return list != null && list.Count > 0;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
         }
 
         /// <summary>该方法是否存在。传输层据此决定 modern 下是否返回 HTTP 404。</summary>
@@ -41,6 +67,9 @@ namespace RevitMCP.Protocol.Mcp
                 case "tools/list":
                 case "tools/call":
                     return true;
+                case "resources/list":
+                case "resources/read":
+                    return HasResources;
                 case "server/discover":
                     return era == McpEra.Modern;
                 case "initialize":
@@ -84,6 +113,14 @@ namespace RevitMCP.Protocol.Mcp
                     case "tools/call":
                         return await CallToolAsync(message, context, progress, cancellationToken)
                             .ConfigureAwait(false);
+
+                    case "resources/list":
+                        if (!HasResources) goto default;
+                        return JsonRpcMessage.Result(message.Id, ListResources(context));
+
+                    case "resources/read":
+                        if (!HasResources) goto default;
+                        return ReadResource(message, context);
 
                     default:
                         return JsonRpcMessage.Error(message.Id,
@@ -164,11 +201,57 @@ namespace RevitMCP.Protocol.Mcp
             }
         }
 
+        // ---------- 资源 ----------
+
+        private JsonValue ListResources(McpRequestContext context)
+        {
+            var resources = JsonValue.NewArray();
+            foreach (var resource in _resources.ListResources()) resources.Add(resource.ToJson());
+            return context.NewResult().Set("resources", resources);
+        }
+
+        private JsonValue ReadResource(JsonRpcMessage message, McpRequestContext context)
+        {
+            var uriValue = message.Params["uri"];
+            if (uriValue == null || uriValue.Kind != JsonKind.String || uriValue.AsString.Length == 0)
+                return JsonRpcMessage.Error(message.Id, JsonRpcErrorCodes.InvalidParams, "缺少 params.uri。");
+
+            var contents = _resources.ReadResource(uriValue.AsString);
+
+            if (contents == null)
+            {
+                // 把有哪些 URI 一并说出来：找不到资源时，光说"找不到"会让调用方去猜拼写
+                var known = new System.Text.StringBuilder();
+                foreach (var resource in _resources.ListResources())
+                {
+                    if (known.Length > 0) known.Append("、");
+                    known.Append(resource.Uri);
+                }
+
+                return JsonRpcMessage.Error(message.Id, JsonRpcErrorCodes.InvalidParams,
+                    "没有 URI 为 " + uriValue.AsString + " 的资源。可用的是：" + known + "。");
+            }
+
+            var items = JsonValue.NewArray();
+            items.Add(contents.ToJson());
+
+            return JsonRpcMessage.Result(message.Id, context.NewResult().Set("contents", items));
+        }
+
         // ---------- 共用片段 ----------
 
-        private JsonValue Capabilities() =>
-            JsonValue.NewObject()
+        private JsonValue Capabilities()
+        {
+            var capabilities = JsonValue.NewObject()
                 .Set("tools", JsonValue.NewObject().Set("listChanged", false));
+
+            if (HasResources)
+                capabilities.Set("resources", JsonValue.NewObject()
+                    .Set("subscribe", false)
+                    .Set("listChanged", false));
+
+            return capabilities;
+        }
 
         private JsonValue ServerInfo() =>
             JsonValue.NewObject()

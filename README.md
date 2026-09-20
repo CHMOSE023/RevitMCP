@@ -33,7 +33,14 @@
 > `revit_set_view_extent` 视图取景（此前导出的图多半是空白）、
 > 房间可设上限标高（此前一律是 Revit 默认的 2438.4 毫米）。逐条见 [docs/fix-log-m10d.md](docs/fix-log-m10d.md#m10-e-能力补齐报告-f14-的前三条)。
 >
-> 共 72 个工具：34 个只读 + 38 个写（含 2 个默认关闭的逃生舱）。
+> **M10-F 指引与操作状态**：建模指引随服务发布（`revit_get_modeling_guide` +
+> MCP 资源 `revitmcp://guide/*`，见 [skills/](skills/README.md)）；
+> 写工具支持幂等键 `requestKey`，回执带 `operationId`，
+> 新增 `revit_get_operation_status`——**超时之后终于有办法查"到底建成了没有"**，
+> 而不是只能在"直接重试"和"当作失败"之间赌一把。
+> 设计见 [docs/design-f09-operation-state.md](docs/design-f09-operation-state.md)。
+>
+> 共 74 个工具：36 个只读 + 38 个写（含 2 个默认关闭的逃生舱）。
 > 与 `revit-bridge-addin` 的逐条对照见 [docs/bridge-parity.md](docs/bridge-parity.md)。
 
 ---
@@ -105,16 +112,30 @@ src/RevitMCP.Protocol    自带 JSON 实现 + JSON-RPC 2.0 + MCP 方法分发   
 src/RevitMCP.Transport   TcpListener 迷你 HTTP + MCP over HTTP 粘合层    ← 不依赖 Revit
 src/RevitMCP.Tooling     调度队列、[McpTool] 注册、Schema 生成、执行管线   ← 不依赖 Revit
 src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、工具 ← 唯一引用 Revit API
+skills/                  给**用**这套服务建模的 Agent 的指引（不是给开发插件的人）
+workflows/               真实模型上的验收工作流，每个里程碑一条
 ```
+
+> `skills/revit-modeling` 是面向建模 Agent 的指引：先确认目标文档、按依赖建模、
+> 代表实例先行、按实际几何验收、失败后先判断执行状态。
+> 内容来自两轮真实实测里那些"调用成功、模型却不对"的问题。
+>
+> **它由服务自己发，客户端不用装**：这几个 Markdown 在编译时嵌进 DLL，
+> 通过 `revit_get_modeling_guide` 工具、MCP 资源（`revitmcp://guide/*`）
+> 与 `instructions` 开场白三条路发布，读到的是同一份内容。
+> 这样指引永远和工具的实际行为是同一个版本——装旧了的副本会让 Agent
+> 对着已经修好的缺陷执行补救动作，而一切看起来都在正常工作。详见 [skills/README.md](skills/README.md)。
 
 ## 现有工具
 
-72 个工具：**34 个只读 + 38 个写**（含 2 个默认关闭的逃生舱）。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
+74 个工具：**36 个只读 + 38 个写**（含 2 个默认关闭的逃生舱）。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
 
 ### 查看模型
 
 | 工具 | 作用 |
 |---|---|
+| `revit_get_modeling_guide` | 读随服务发布的建模指引。**建模前先读 overview**，写绕行代码前先读 limitations |
+| `revit_get_operation_status` | 查一次写调用到底提交没有。**收到 TIMEOUT 先调它，别直接重试** |
 | `revit_get_document_info` | 当前文档标题、路径、活动视图、写入模式是否开启 |
 | `revit_list_documents` | 这个 Revit 里打开的所有文档。批量审计从它开始 |
 | `revit_get_project_units` | 项目的长度/面积/体积显示单位，以及它与工具单位是否一致 |

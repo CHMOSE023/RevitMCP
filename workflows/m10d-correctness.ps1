@@ -585,6 +585,84 @@ else {
     }
 }
 
+# ==================== F09：幂等与操作状态 ====================
+
+Write-Step 'F09 幂等键与操作状态'
+
+$stamp = [DateTime]::Now.ToString('HHmmss')
+$key = "m10f-$stamp"
+$levelName = "M10F 幂等 $stamp"
+
+$makeLevel = @{
+    requestKey = $key
+    datums     = @(@{ kind = 'level'; name = $levelName; elevationMm = ($testElevation + 3000); createPlanView = $false })
+}
+
+$firstCall = Invoke-RevitTool $session 'revit_create_datums' $makeLevel -ThrowOnError
+$madeLevel = $firstCall.Data.datums | Select-Object -First 1
+$script:Created += $madeLevel.id
+
+Assert-True '写回执带 operationId' (-not [string]::IsNullOrEmpty($firstCall.Data.operationId)) `
+    '超时那一刻，回执里的 operationId 是调用方唯一的抓手。'
+
+# 原样重发：这正是超时后会做的事，**不能再建一条标高**
+$secondCall = Invoke-RevitTool $session 'revit_create_datums' $makeLevel
+
+Assert-True '同键同参重发不会再执行一次' (-not $secondCall.IsError) `
+    "重发被拒了：$($secondCall.Text)"
+
+$levelsNow = (Invoke-RevitTool $session 'revit_list_levels' -ThrowOnError).Data.levels
+$sameName = @($levelsNow | Where-Object { $_.name -eq $levelName })
+
+Assert-True '模型里只有一条这个名字的标高' ($sameName.Count -eq 1) `
+    "实际有 $($sameName.Count) 条——幂等没生效，重复创建已经发生。"
+
+if (-not $secondCall.IsError) {
+    $replayed = @($secondCall.Warnings | Where-Object { $_ -match '这是重放' }).Count -gt 0
+    Assert-True '重放这件事被说了出来' $replayed `
+        '回执没有说明这是重放，调用方会以为又建了一条。'
+}
+
+# 同键异参：必须拒绝，且**什么都不建**
+$conflict = Invoke-RevitTool $session 'revit_create_datums' @{
+    requestKey = $key
+    datums     = @(@{ kind = 'level'; name = "$levelName 不该出现"; elevationMm = ($testElevation + 4000) })
+}
+
+Assert-True '同键异参被拒绝' ($conflict.IsError -and $conflict.Code -eq 'IDEMPOTENCY_CONFLICT') `
+    "期望 IDEMPOTENCY_CONFLICT，实际 Code=$($conflict.Code)：$($conflict.Text)"
+
+$after = (Invoke-RevitTool $session 'revit_list_levels' -ThrowOnError).Data.levels
+Assert-True '被拒绝的那次没有建出任何东西' `
+    (-not ($after | Where-Object { $_.name -like '*不该出现*' })) `
+    '冲突的那次居然建出了标高。'
+
+# 状态查询
+$status = Invoke-RevitTool $session 'revit_get_operation_status' @{ operationId = $firstCall.Data.operationId }
+
+if ($status.IsError) {
+    Assert-True '查得到操作状态' $false "查询失败：$($status.Text)"
+}
+else {
+    Assert-True '状态是 committed' ($status.Data.state -eq 'committed') `
+        "实际状态：$($status.Data.state)"
+    Assert-True 'nextStep 说得出接下来该干什么' (-not [string]::IsNullOrEmpty($status.Data.nextStep))
+    Write-Host ("  · nextStep：{0}" -f $status.Data.nextStep) -ForegroundColor DarkGray
+}
+
+# 查不到的 ID：必须是 unknown + 查证指引，不能说"没有这个操作"
+$missingStatus = Invoke-RevitTool $session 'revit_get_operation_status' @{ operationId = 'op_不存在的ID' }
+
+Assert-True '查不到的操作返回 unknown 而非"不存在"' `
+    ((-not $missingStatus.IsError) -and $missingStatus.Data.state -eq 'unknown') `
+    "实际：IsError=$($missingStatus.IsError) state=$($missingStatus.Data.state)"
+
+if (-not $missingStatus.IsError) {
+    Assert-True '并且告诉你怎么去模型里核实' `
+        ($missingStatus.Data.nextStep -match 'revit_get_model_changes|revit_query_elements') `
+        '查不到时只说"没有"，调用方会以为它没发生过——而模型里可能躺着那次操作的成果。'
+}
+
 # ==================== 清理 ====================
 
 if (-not $Keep) {
