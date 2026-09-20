@@ -350,6 +350,19 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("房间编号。省略则用 Revit 自动编号")]
         public string Number { get; set; }
+
+        [McpParam("房间顶的标高 ID（上限），来自 revit_list_levels。" +
+                  "**省略的话房间只有 Revit 的默认高度 2438.4 毫米（8 英尺）**，" +
+                  "与实际层高无关——剖面里的房间高度、房间体积、按房间做的面积/体积统计都会是错的。" +
+                  "一般给上一层的标高")]
+        public string UpperLimitLevelId { get; set; }
+
+        [McpParam("相对上限标高的偏移，毫米，默认 0。可为负（收到梁底或吊顶）。" +
+                  "只在给了 upperLimitLevelId 时有效")]
+        public double? LimitOffsetMm { get; set; }
+
+        [McpParam("相对所在标高的底部偏移，毫米，默认 0。架空地板、下沉区用它")]
+        public double? BaseOffsetMm { get; set; }
     }
 
     public sealed class CreateRoomsInput
@@ -383,6 +396,18 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("所在标高名")]
         public string Level { get; set; }
+
+        [McpParam("房间上限所在的标高名。为 null 表示没设上限——" +
+                  "那意味着房间高度是 Revit 的默认 2438.4 毫米，与层高无关")]
+        public string UpperLimit { get; set; }
+
+        [McpParam("房间的实际高度，毫米。**没设上限时它是 2438.4**（8 英尺），" +
+                  "这个数字出现在回执里就说明竖向范围没设对")]
+        public double UnboundedHeightMm { get; set; }
+
+        [McpParam("体积，立方米。项目没有打开「面积和体积计算 → 体积」时为 null——" +
+                  "那是「项目没在算体积」，不是「这个房间体积为 0」")]
+        public double? VolumeCbm { get; set; }
     }
 
     public sealed class CreateRoomsOutput : IReportsAffectedElements
@@ -471,6 +496,8 @@ namespace RevitMCP.Addin.Tools
             if (!string.IsNullOrEmpty(spec.Name)) TrySet(room, BuiltInParameter.ROOM_NAME, spec.Name, context, index);
             if (!string.IsNullOrEmpty(spec.Number)) TrySet(room, BuiltInParameter.ROOM_NUMBER, spec.Number, context, index);
 
+            var upperLevel = ApplyVerticalExtent(document, room, spec, context, index);
+
             // 面积要在设完参数之后读：Revit 需要一次重算才知道这个点有没有被围上
             document.Regenerate();
 
@@ -484,8 +511,109 @@ namespace RevitMCP.Addin.Tools
                 Number = ListRoomsTool.ReadString(room, BuiltInParameter.ROOM_NUMBER),
                 AreaSqm = areaSqm,
                 IsBounded = areaSqm > 0,
-                Level = CreateSupport.SafeName(level)
+                Level = CreateSupport.SafeName(level),
+                UpperLimit = upperLevel == null ? null : CreateSupport.SafeName(upperLevel),
+                UnboundedHeightMm = Units.Round(Units.FromFeet(ReadDouble(room, BuiltInParameter.ROOM_HEIGHT))),
+                VolumeCbm = VolumeOf(room)
             };
+        }
+
+        /// <summary>
+        /// 房间的竖向范围。
+        ///
+        /// 不给上限时，Revit 给的是 2438.4 毫米——8 英尺，一个与项目层高毫无关系的数。
+        /// 平面上看不出来，剖面里、房间体积里、按房间做的统计里全是错的，
+        /// 而此前这个工具**根本没有办法**设它。
+        ///
+        /// 上限设不上不让整批回滚：房间本身已经建在对的位置上了。但必须说出来——
+        /// 一个高度是 2438.4 的房间看起来和正常房间一模一样。
+        /// </summary>
+        private static Level ApplyVerticalExtent(
+            Document document, Room room, RoomSpec spec,
+            ToolExecutionContext<UIApplication> context, int index)
+        {
+            if (spec.BaseOffsetMm.HasValue)
+                TrySetLength(room, BuiltInParameter.ROOM_LOWER_OFFSET, spec.BaseOffsetMm.Value,
+                    "底部偏移", context, index);
+
+            if (string.IsNullOrWhiteSpace(spec.UpperLimitLevelId))
+            {
+                if (spec.LimitOffsetMm.HasValue)
+                    CreateSupport.Once(context, "limitOffsetMm 只在给了 upperLimitLevelId 时有效，已忽略。");
+
+                CreateSupport.Once(context,
+                    "没给 upperLimitLevelId，房间高度是 Revit 的默认值 2438.4 毫米（8 英尺），" +
+                    "与实际层高无关。剖面、体积和按房间的统计都会按这个高度算——" +
+                    "要正确的房间高度，请给上一层的标高。");
+                return null;
+            }
+
+            var upper = CreateSupport.ResolveLevel(document, context, spec.UpperLimitLevelId, index);
+
+            try
+            {
+                var parameter = room.get_Parameter(BuiltInParameter.ROOM_UPPER_LEVEL);
+                if (parameter == null || parameter.IsReadOnly || !parameter.Set(upper.Id))
+                {
+                    CreateSupport.Once(context,
+                        "elements[" + index + "]：房间上限没能设到标高「" + CreateSupport.SafeName(upper) +
+                        "」，高度仍是 Revit 的默认值。");
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                CreateSupport.Once(context,
+                    "elements[" + index + "]：房间上限没能设到标高「" + CreateSupport.SafeName(upper) +
+                    "」：" + ex.Message);
+                return null;
+            }
+
+            if (spec.LimitOffsetMm.HasValue)
+                TrySetLength(room, BuiltInParameter.ROOM_UPPER_OFFSET, spec.LimitOffsetMm.Value,
+                    "上限偏移", context, index);
+
+            return upper;
+        }
+
+        private static void TrySetLength(
+            Room room, BuiltInParameter id, double valueMm, string what,
+            ToolExecutionContext<UIApplication> context, int index)
+        {
+            try
+            {
+                var parameter = room.get_Parameter(id);
+                if (parameter != null && !parameter.IsReadOnly && parameter.Set(Units.ToFeet(valueMm))) return;
+            }
+            catch { /* 落到下面的警告 */ }
+
+            CreateSupport.Once(context,
+                "elements[" + index + "]：房间" + what + "没能设成 " + CreateSupport.Format(valueMm) + " 毫米。");
+        }
+
+        private static double ReadDouble(Room room, BuiltInParameter id)
+        {
+            try
+            {
+                var parameter = room.get_Parameter(id);
+                return parameter == null ? 0 : parameter.AsDouble();
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>
+        /// 房间体积。**只有项目打开了"面积和体积计算 → 体积"才有值**，
+        /// 否则 Revit 一律返回 0——那不是"这个房间体积是 0"，是"这个项目没在算体积"。
+        /// 所以 0 一律报成 null，免得调用方把它当成一个真实数字。
+        /// </summary>
+        private static double? VolumeOf(Room room)
+        {
+            try
+            {
+                var volume = room.Volume;
+                return volume > 0 ? (double?)Units.CubicMeters(volume) : null;
+            }
+            catch { return null; }
         }
 
         /// <summary>

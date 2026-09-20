@@ -95,6 +95,41 @@ function New-Rectangle {
     )
 }
 
+function Get-InkRatio {
+    <#
+    .SYNOPSIS
+        一张图里有多少不是白的。这就是"有效内容占比"。
+
+    .DESCRIPTION
+        为了快，按 4 像素步长采样，够用来比较两张同一视图导出的图。
+        取不到就返回 0——量不了不该让整条验收崩掉。
+    #>
+    param([string] $Path)
+
+    try {
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        $bitmap = [System.Drawing.Bitmap]::FromFile($Path)
+        try {
+            $ink = 0
+            $total = 0
+            for ($y = 0; $y -lt $bitmap.Height; $y += 4) {
+                for ($x = 0; $x -lt $bitmap.Width; $x += 4) {
+                    $total++
+                    $pixel = $bitmap.GetPixel($x, $y)
+                    if ($pixel.R -lt 245 -or $pixel.G -lt 245 -or $pixel.B -lt 245) { $ink++ }
+                }
+            }
+            if ($total -eq 0) { return 0 }
+            return $ink / $total
+        }
+        finally { $bitmap.Dispose() }
+    }
+    catch {
+        Write-Host "    （读不出图片，跳过占比统计：$($_.Exception.Message)）" -ForegroundColor DarkYellow
+        return 0
+    }
+}
+
 function Get-Box {
     param([PSCustomObject] $Session, [string] $Id)
 
@@ -396,6 +431,157 @@ else {
             Assert-True '整个外框越界会被报出来' $warned `
                 '视口左边已经探出纸外，但没有任何警告——只看中心点的检查漏掉了它（F11）。'
         }
+    }
+}
+
+# ==================== F14：能力补齐 ====================
+
+Write-Step 'F14a 房间竖向约束'
+
+$roomLevels = (Invoke-RevitTool $session 'revit_list_levels' -ThrowOnError).Data.levels |
+    Sort-Object elevationMm
+$roomBase = $roomLevels | Select-Object -First 1
+$roomTop = $roomLevels | Where-Object { $_.elevationMm -gt $roomBase.elevationMm } | Select-Object -First 1
+
+$existingRoom = $null
+$roomList = Invoke-RevitTool $session 'revit_list_rooms' @{ limit = 5 }
+if (-not $roomList.IsError) {
+    $existingRoom = $roomList.Data.rooms | Where-Object { $_.isBounded -and $_.levelId -eq $roomBase.id } | Select-Object -First 1
+}
+
+if (-not $roomTop) {
+    Write-Host "  · 只有一条标高，跳过 F14a" -ForegroundColor DarkYellow
+}
+elseif (-not $existingRoom) {
+    Write-Host "  · 底标高上没有围合房间，跳过 F14a（需要一个有房间的模型）" -ForegroundColor DarkYellow
+}
+else {
+    # 在已有房间里再放一个：会得到"多余的房间"警告，但高度参数照样能验，建完就删
+    $room = Invoke-RevitTool $session 'revit_create_rooms' @{
+        elements = @(@{
+            locationPoint     = @{ x = $existingRoom.location.x; y = $existingRoom.location.y }
+            levelId           = $roomBase.id
+            name              = 'M10E 高度验收'
+            upperLimitLevelId = $roomTop.id
+            limitOffsetMm     = -200
+        })
+    } -ThrowOnError
+
+    $newRoom = $room.Data.elements | Select-Object -First 1
+    $script:Created += $newRoom.id
+
+    $expectedHeight = [double]$roomTop.elevationMm - [double]$roomBase.elevationMm - 200
+
+    Assert-Close '房间高度 = 上限标高 - 底标高 - 200' `
+        ([double]$newRoom.unboundedHeightMm) $expectedHeight 1.0 `
+        '房间上限没设上，高度还是 Revit 默认的 2438.4 毫米（F14）。'
+
+    Assert-True '回执报出了上限标高' ($newRoom.upperLimit -eq $roomTop.name) `
+        "回执里的 upperLimit 是「$($newRoom.upperLimit)」，期望「$($roomTop.name)」。"
+}
+
+Write-Step 'F14b 视图取景'
+
+$view3d = (Invoke-RevitTool $session 'revit_list_views' @{ limit = 200 } -ThrowOnError).Data.views |
+    Where-Object { $_.viewType -eq 'ThreeD' -and -not $_.sheetId } |
+    Select-Object -First 1
+
+if (-not $view3d) {
+    Write-Host "  · 没有空闲的三维视图，跳过 F14b" -ForegroundColor DarkYellow
+}
+else {
+    # 先把这个视图放开，建立一个确定的基线。
+    # 不这么做的话，只要之前有人（包括上一次跑本脚本）收紧过它，
+    # "收紧前"那张图就已经是收好的，前后占比一样，断言会假失败
+    Invoke-RevitTool $session 'revit_set_view_extent' `
+        @{ viewId = $view3d.id; cropActive = $false } -ThrowOnError | Out-Null
+
+    $before = Invoke-RevitTool $session 'revit_export_image' `
+        @{ viewId = $view3d.id; fileName = 'm10e-before.png'; pixelWidth = 1200 } -ThrowOnError
+
+    # 按建筑的墙取景，而不是"所有可见构件"——本脚本自己在 80 米外建了验收用的板，
+    # 那些板也是可见构件，按它们算出来的范围会把建筑挤成一个点。
+    # 这同时验到了 elementIds 这条路径
+    $walls = (Invoke-RevitTool $session 'revit_query_elements' `
+        @{ category = 'OST_Walls'; limit = 100 } -ThrowOnError).Data.elements
+
+    $extentArgs = @{ viewId = $view3d.id; paddingMm = 1000 }
+    if ($walls -and $walls.Count -gt 0) { $extentArgs['elementIds'] = @($walls | ForEach-Object { $_.id }) }
+
+    $extent = Invoke-RevitTool $session 'revit_set_view_extent' $extentArgs
+
+    if ($extent.IsError) {
+        Assert-True '取景收得动' $false "失败：$($extent.Text)"
+    }
+    else {
+        Assert-True '取景后裁剪是开启的' ([bool]$extent.Data.cropActive) '裁剪没打开，取景不会生效。'
+        Assert-True '三维视图连剖切框一起收紧' ([bool]$extent.Data.sectionBoxActive) `
+            '三维只裁画面不剖切的话，框外的构件还在画面里。'
+        Assert-True '基准图元被隐藏了' ([bool]$extent.Data.datumsHidden) `
+            '标高线不受剖切框约束，不关掉它们，图里还是它们占大头。'
+        Assert-True '报出了取景范围' ($null -ne $extent.Data.extent) '回执没有给出取景范围。'
+
+        $after = Invoke-RevitTool $session 'revit_export_image' `
+            @{ viewId = $view3d.id; fileName = 'm10e-after.png'; pixelWidth = 1200 } -ThrowOnError
+
+        # **量图本身，不量标志位。**第一次跑这条时三个标志位全是对的，
+        # 导出的图却更差了——建筑被挤到角落，裁剪区落在一片空地上。
+        # 所以这里直接数非白像素占比：它就是报告里说的"图中有效内容占比"
+        $inkBefore = Get-InkRatio $before.Data.path
+        $inkAfter = Get-InkRatio $after.Data.path
+
+        Write-Host ("  · 有效内容占比：收紧前 {0:P2}，收紧后 {1:P2}" -f $inkBefore, $inkAfter) -ForegroundColor DarkGray
+        Write-Host ("    图在 {0}" -f (Split-Path $after.Data.path)) -ForegroundColor DarkGray
+
+        Assert-True '收紧之后图里的有效内容变多了' ($inkAfter -gt $inkBefore * 1.5) `
+            ("收紧前 {0:P2}、收紧后 {1:P2}——取景没起作用。" -f $inkBefore, $inkAfter)
+
+        # 还原：这是用户的视图，验收不该把它留在收紧的状态
+        $restore = Invoke-RevitTool $session 'revit_set_view_extent' `
+            @{ viewId = $view3d.id; cropActive = $false }
+        Assert-True '能还原成不裁剪' ((-not $restore.IsError) -and (-not $restore.Data.cropActive)) `
+            "还原失败：$($restore.Text)"
+    }
+}
+
+Write-Step 'F14c 载入族（只验错误路径，不往项目里塞族）'
+
+$missing = Invoke-RevitTool $session 'revit_load_family' `
+    @{ path = 'C:\这个文件不存在\某个族.rfa' }
+
+Assert-True '路径不存在时说得清楚' `
+    ($missing.IsError -and $missing.Code -eq 'ELEMENT_NOT_FOUND') `
+    "期望 ELEMENT_NOT_FOUND，实际 Code=$($missing.Code)：$($missing.Text)"
+
+$wrongExt = Invoke-RevitTool $session 'revit_load_family' `
+    @{ path = 'C:\Users\pc-bim\Desktop\RevitTest\MCPModelTest.rvt' }
+
+Assert-True '把 .rvt 当族载入会被拦下' `
+    ($wrongExt.IsError -and $wrongExt.Code -eq 'INVALID_PARAMETER') `
+    "期望 INVALID_PARAMETER，实际 Code=$($wrongExt.Code)：$($wrongExt.Text)"
+
+# 真的载一个族：从 Revit 自带库里挑一个，载完就删，不留在项目里
+$libraryFamily = Get-ChildItem -Path @(
+    "C:\ProgramData\Autodesk\RVT 2019\Libraries\China\注释\标记",
+    "C:\ProgramData\Autodesk\RVT 2019\Libraries\China\注释"
+) -Filter '*.rfa' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+
+if (-not $libraryFamily) {
+    Write-Host "  · 本机没有 Revit 族库，跳过真实载入" -ForegroundColor DarkYellow
+}
+else {
+    $load = Invoke-RevitTool $session 'revit_load_family' @{ path = $libraryFamily.FullName }
+
+    if ($load.IsError) {
+        Assert-True '载入族' $false "失败：$($load.Text)"
+    }
+    else {
+        Write-Host ("  · 载入「{0}」（{1}），loaded={2}" -f $load.Data.name, $load.Data.category, $load.Data.loaded) -ForegroundColor DarkGray
+        Assert-True '回执带回了类型 ID' ($load.Data.types.Count -gt 0) `
+            '载入成功却没给类型 ID，调用方还得再查一次 revit_list_types。'
+
+        # 只删我们这次载进来的；项目里本来就有的不动
+        if ($load.Data.loaded) { $script:Created += $load.Data.id }
     }
 }
 

@@ -17,8 +17,8 @@
 > · **M10-B 复用与材质**、**M10-C 出图** 的主体已随能力补齐一并落地：
 >   图元变换与编组、材质、创建视图与视图样板、注释与标注、交付导出、
 >   协同与链接、阶段与设计选项、参数定义、MEP、碰撞检查。
-> · 仍缺路线图里点名的两项：`revit_load_family`（载入族）、
->   `revit_export_image` 的取景控制。
+> · 路线图里点名的两项已补上（见下面的 M10-E）：`revit_load_family` 载入族、
+>   取景控制（独立成 `revit_set_view_extent`，理由见该工具的说明）。
 >
 > **M10-D 正确性修复**（按《源码评估与改进报告》第一阶段）：
 > 楼板不再忽略 `levelId`（竖向约束写完读回来核对，对不上就整批回滚）、
@@ -28,7 +28,12 @@
 > 被忽略的 Revit 警告带上构件 ID、认不出来的模态对话框不再替用户点确定、
 > Origin 白名单按 URI 比对。逐条见 [docs/fix-log-m10d.md](docs/fix-log-m10d.md)。
 >
-> 共 70 个工具：34 个只读 + 36 个写（含 2 个默认关闭的逃生舱）。
+> **M10-E 能力补齐**（报告 F14 里我实测撞到的三条）：
+> `revit_load_family` 载入族（此前缺族时纯 MCP 客户端无法自救）、
+> `revit_set_view_extent` 视图取景（此前导出的图多半是空白）、
+> 房间可设上限标高（此前一律是 Revit 默认的 2438.4 毫米）。逐条见 [docs/fix-log-m10d.md](docs/fix-log-m10d.md#m10-e-能力补齐报告-f14-的前三条)。
+>
+> 共 72 个工具：34 个只读 + 38 个写（含 2 个默认关闭的逃生舱）。
 > 与 `revit-bridge-addin` 的逐条对照见 [docs/bridge-parity.md](docs/bridge-parity.md)。
 
 ---
@@ -104,7 +109,7 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 
 ## 现有工具
 
-70 个工具：**34 个只读 + 36 个写**（含 2 个默认关闭的逃生舱）。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
+72 个工具：**34 个只读 + 38 个写**（含 2 个默认关闭的逃生舱）。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
 
 ### 查看模型
 
@@ -155,7 +160,8 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_create_surface_based_elements` | 按闭合边界批量建楼板、屋顶、天花 |
 | `revit_create_mep_curves` | 按定位线批量建风管、水管、线管、桥架 |
 | `revit_create_datums` | 建轴网与标高（标高默认连楼层平面一起建）|
-| `revit_create_rooms` | 按点批量建房间，回执直接给出面积 |
+| `revit_create_rooms` | 按点批量建房间，可设上限标高，回执给出面积与实际高度 |
+| `revit_load_family` | 载入 .rfa 族文件，返回族与它的全部类型 ID。**样板里没有的族只能靠它** |
 | `revit_create_materials` | 建材质。**尽量从已有材质复制**，空白新建的没有物理与外观资源 |
 | `revit_create_project_parameter` | 建项目参数并绑定到类别（API 只能造共享参数，见下）|
 | `revit_transform_elements` | 平移 / 复制 / 旋转 / 镜像 |
@@ -168,6 +174,7 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 | `revit_batch_set_parameters` | 按条件匹配 + 一次写多个参数的完整形态 |
 | `revit_create_views` | 建平面 / 剖面 / 立面 / 三维视图 |
 | `revit_apply_view_template` | 批量套 / 取消视图样板 |
+| `revit_set_view_extent` | 把视图取景收到构件上（三维含剖切框）。**出图前用它**，否则图里多半是空白 |
 | `revit_create_sheets` | 批量建图纸 |
 | `revit_duplicate_sheets` | 复制图纸（含视图与详图，语义见回执的 `method`）|
 | `revit_update_sheets` | 改图纸编号、名称、图签。**成批改号自动走两阶段防撞** |
