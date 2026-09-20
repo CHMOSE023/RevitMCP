@@ -39,17 +39,45 @@ namespace RevitMCP.Addin.Tools
                     return;
 
                 case StorageType.ElementId:
-                    ElementId id;
-                    if (!ElementIdCompat.TryParse(value.Trim(), out id))
-                        throw new ToolFailureException(McpDomainError.InvalidParameter,
-                            "参数 \"" + name + "\" 需要一个构件 ID，但收到 \"" + value + "\"。");
-                    if (!parameter.Set(id)) throw Rejected(name, value, element);
+                    WriteElementId(parameter, name, value, element);
                     return;
 
                 default:
                     throw new ToolFailureException(McpDomainError.InvalidParameter,
                         "参数 \"" + name + "\" 的存储类型 " + parameter.StorageType + " 暂不支持写入。");
             }
+        }
+
+        /// <summary>
+        /// 写入 ElementId 类参数（材质、标高、填充样式这些，值是另一个构件）。
+        ///
+        /// **空值要单独处理。** -1（<c>ElementId.InvalidElementId</c>）与空字符串是
+        /// "把这个参数清空"的正规写法，不是一个找不到的构件——
+        /// 拿它去 <c>GetElement</c> 必然返回 null，于是"清空参数"这件事会变成一句
+        /// "这个文档里不存在 ID 为 -1 的构件"，而调用方根本无从知道该怎么办。
+        /// </summary>
+        private static void WriteElementId(Parameter parameter, string name, string value, Element element)
+        {
+            var text = (value ?? string.Empty).Trim();
+
+            if (text.Length == 0 || text == "-1")
+            {
+                if (!parameter.Set(ElementId.InvalidElementId))
+                    throw new ToolFailureException(McpDomainError.TransactionFailed,
+                        "Revit 拒绝清空参数 \"" + name + "\"。这个参数可能是必填的。");
+                return;
+            }
+
+            // 其余情况两种写法都收，否则"把材质设成 uniqueId"会莫名其妙地失败
+            string problem;
+            var target = ElementRef.Resolve(element.Document, text, out problem);
+
+            if (target == null)
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "参数 \"" + name + "\" 需要一个构件 ID：" + problem +
+                    "（要清空这个参数，传 -1 或空字符串）");
+
+            if (!parameter.Set(target.Id)) throw Rejected(name, value, element);
         }
 
         private static void WriteDouble(Parameter parameter, string name, string value, Element element)

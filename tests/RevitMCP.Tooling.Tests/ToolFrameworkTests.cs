@@ -169,6 +169,59 @@ namespace RevitMCP.Tooling.Tests
             Assert.Equal(new[] { "Light", "Dark" }, shade["enum"].Items.Select(i => i.AsString));
         }
 
+        /// <summary>
+        /// 判别式参数（operation / kind / viewType 这类）的取值必须进 schema 的 enum。
+        ///
+        /// 只写在 description 的散文里等于要求调用方从自然语言里把枚举抠出来，
+        /// 客户端也没法据此做约束——那一类错误本不该发生在运行期。
+        /// </summary>
+        private sealed class Discriminated
+        {
+            [McpParam("操作类型", Required = true,
+                      AllowedValues = new[] { "move", "copy", "rotate" })]
+            public string Operation { get; set; }
+
+            [McpParam("要导出的格式，可以多选",
+                      AllowedValues = new[] { "dwg", "pdf" })]
+            public List<string> Formats { get; set; }
+
+            [McpParam("没有取值约束的自由文本")]
+            public string Note { get; set; }
+        }
+
+        [Fact]
+        public void AllowedValuesBecomesEnumOnStringProperties()
+        {
+            var properties = SchemaGenerator.Generate(typeof(Discriminated))["properties"];
+            var operation = properties["operation"];
+
+            Assert.Equal("string", operation["type"].AsString);
+            Assert.Equal(new[] { "move", "copy", "rotate" },
+                operation["enum"].Items.Select(i => i.AsString));
+        }
+
+        [Fact]
+        public void AllowedValuesOnArrayLandsOnItemsNotTheArray()
+        {
+            // 挂错地方的 schema 不会报错，只会悄悄失去约束力——
+            // 所以这一条必须有测试盯着
+            var formats = SchemaGenerator.Generate(typeof(Discriminated))["properties"]["formats"];
+
+            Assert.Equal("array", formats["type"].AsString);
+            Assert.Null(formats["enum"]);
+            Assert.Equal(new[] { "dwg", "pdf" },
+                formats["items"]["enum"].Items.Select(i => i.AsString));
+        }
+
+        [Fact]
+        public void PropertiesWithoutAllowedValuesGetNoEnum()
+        {
+            var note = SchemaGenerator.Generate(typeof(Discriminated))["properties"]["note"];
+
+            Assert.Equal("string", note["type"].AsString);
+            Assert.Null(note["enum"]);
+        }
+
         [Fact]
         public void RequiredCoversExplicitFlagAndNonNullableValueTypes()
         {

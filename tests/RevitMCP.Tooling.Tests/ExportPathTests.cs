@@ -99,6 +99,62 @@ namespace RevitMCP.Tooling.Tests
             Rejects(() => Resolve(name), "不支持的文件扩展名");
         }
 
+        // ---------- 每类导出各自的白名单 ----------
+
+        private string ResolveAs(string fileName, string defaultExtension, string[] allowed) =>
+            ExportPaths.Resolve(_root, fileName, defaultExtension, allowed);
+
+        [Theory]
+        [InlineData("model.dwg")]
+        [InlineData("model.ifc")]
+        [InlineData("图纸集.pdf")]
+        public void DocumentExportAcceptsDeliveryFormats(string name)
+        {
+            var path = ResolveAs(name, ".dwg", ExportPaths.DocumentExtensions);
+
+            Assert.Equal(Path.Combine(_root, name), path);
+        }
+
+        [Fact]
+        public void DocumentExportStillRejectsImages()
+        {
+            // 白名单跟着导出工具走，而不是全局合并一份——
+            // 导 DWG 的工具写出一个 .png，下游拿到才会发现
+            Rejects(() => ResolveAs("plan.png", ".dwg", ExportPaths.DocumentExtensions),
+                "不支持的文件扩展名");
+        }
+
+        [Fact]
+        public void ImageExportStillRejectsDocuments()
+        {
+            Rejects(() => Resolve("model.dwg"), "不支持的文件扩展名");
+        }
+
+        [Fact]
+        public void TableExportAcceptsCsv()
+        {
+            var path = ResolveAs("门明细表", ".csv", ExportPaths.TableExtensions);
+
+            Assert.Equal(Path.Combine(_root, "门明细表.csv"), path);
+        }
+
+        [Fact]
+        public void EscapeAttemptsAreRejectedForEveryWhitelist()
+        {
+            // 越界检查在扩展名检查**之前**，换一个白名单不应当把它绕过去
+            Rejects(() => ResolveAs(@"..\escape.dwg", ".dwg", ExportPaths.DocumentExtensions));
+            Rejects(() => ResolveAs(@"C:\windows\evil.pdf", ".pdf", ExportPaths.DocumentExtensions));
+            Rejects(() => ResolveAs("sub/model.ifc", ".ifc", ExportPaths.DocumentExtensions),
+                "只能是文件名");
+        }
+
+        [Fact]
+        public void EmptyWhitelistIsRejected()
+        {
+            // 空白名单意味着“什么都不允许”，静默放行才是真的危险
+            Rejects(() => ResolveAs("a.dwg", ".dwg", new string[0]));
+        }
+
         [Fact]
         public void EmptyNameIsRejected()
         {

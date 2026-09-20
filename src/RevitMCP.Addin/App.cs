@@ -24,6 +24,9 @@ namespace RevitMCP.Addin
         public ServerHost Server { get; private set; }
         public RevitDispatcher Dispatcher { get; private set; }
 
+        /// <summary>模型改动跟踪。revit_get_model_changes 的数据来源。</summary>
+        public ChangeTracker Changes { get; private set; }
+
         private RibbonController _ribbon;
 
         public Result OnStartup(UIControlledApplication application)
@@ -58,6 +61,11 @@ namespace RevitMCP.Addin
                 // 让实例发现文件跟上用户切换文档。ViewActivated 是能拿到 Document 的
                 // 最早时机——UIControlledApplication 本身够不到 ActiveUIDocument
                 application.ViewActivated += OnViewActivated;
+
+                // 改动跟踪必须从启动就开着：它记的是"从某个时刻起改了什么"，
+                // 等到第一次有人来问再开始记，那之前的改动就永远补不回来了
+                Changes = new ChangeTracker();
+                Changes.Attach(application.ControlledApplication);
 
                 _ribbon = RibbonController.Build(application);
                 _ribbon.Refresh(Server, Config.WriteEnabled);
@@ -96,6 +104,9 @@ namespace RevitMCP.Addin
             {
                 try { application.ViewActivated -= OnViewActivated; }
                 catch (Exception ex) { Log.Error("解绑 ViewActivated 失败。", ex); }
+
+                try { Changes?.Dispose(); }
+                catch (Exception ex) { Log.Error("解绑 DocumentChanged 失败。", ex); }
 
                 Server?.Stop();
                 // 先停服务再停调度器：反过来的话，正在处理中的请求会拿到 SERVER_STOPPED 而不是正常结果

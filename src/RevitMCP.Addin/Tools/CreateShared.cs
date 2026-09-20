@@ -242,17 +242,17 @@ namespace RevitMCP.Addin.Tools
 
         public static Element RequireElement(Document document, string rawId, int index)
         {
-            ElementId elementId;
-            if (!ElementIdCompat.TryParse(rawId, out elementId))
-                throw Failure(index, McpDomainError.InvalidParameter,
-                    "构件 ID \"" + rawId + "\" 格式非法，应为十进制整数的字符串形式。");
+            string problem;
+            var element = ElementRef.Resolve(document, rawId, out problem);
 
-            var element = document.GetElement(elementId);
-            if (element == null)
-                throw Failure(index, McpDomainError.ElementNotFound,
-                    "模型中不存在 ID 为 " + rawId + " 的构件。");
+            if (element != null) return element;
 
-            return element;
+            // 与 RevitToolBase.RequireElement 保持一致：格式问题与找不到要用不同的错误码
+            var code = problem != null && problem.Contains("格式")
+                ? McpDomainError.InvalidParameter
+                : McpDomainError.ElementNotFound;
+
+            throw Failure(index, code, problem);
         }
 
         /// <summary>
@@ -263,8 +263,24 @@ namespace RevitMCP.Addin.Tools
         /// </summary>
         public static ToolFailureException Failure(int index, string code, string message)
         {
-            var prefix = index >= 0 ? "elements[" + index + "]：" : string.Empty;
-            return new ToolFailureException(code, prefix + message + "（整批未创建）");
+            return Failure(index, code, message, "elements", "整批未创建");
+        }
+
+        /// <summary>
+        /// 同上，但由调用方给出**它自己的**数组参数名与回滚措辞。
+        ///
+        /// 这两样都不能写死。实测踩过：<c>revit_update_sheets</c> 的报错说
+        /// "elements[0]：…（整批未创建）"，而它的参数叫 <c>sheets</c>、做的是修改不是创建——
+        /// 调用方会去找一个不存在的数组，然后以为有什么东西没建出来。
+        /// 报错里的每一个名词都必须指向调用方真的能看到的东西。
+        /// </summary>
+        public static ToolFailureException Failure(
+            int index, string code, string message, string field, string outcome)
+        {
+            var prefix = index >= 0 ? field + "[" + index + "]：" : string.Empty;
+            var suffix = string.IsNullOrEmpty(outcome) ? string.Empty : "（" + outcome + "）";
+
+            return new ToolFailureException(code, prefix + message + suffix);
         }
 
         /// <summary>

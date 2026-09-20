@@ -154,13 +154,27 @@ namespace RevitMCP.Addin.Ribbon
 
                 if (_writeModeButton != null)
                 {
+                    // 逃生舱是比"能改模型"更大的一件事：它允许在 Revit 进程里跑任意代码。
+                    // 它只能从配置文件开启，所以用户很可能是很久以前开的、早就忘了——
+                    // 把这个状态一直摆在 Ribbon 上，是唯一能让人想起来的地方
+                    var escapeHatch = App.Current?.Config?.EscapeHatchEnabled == true;
+
                     _writeModeButton.ItemText = writeEnabled ? "修改模型" : "浏览模型";
-                    _writeModeButton.ToolTip = writeEnabled
-                        ? "点击切回浏览模型。切回后所有写工具返回 WRITE_DISABLED。"
-                        : "点击切换到修改模型。默认为浏览模型。";
+                    _writeModeButton.ToolTip =
+                        (writeEnabled
+                            ? "点击切回浏览模型。切回后所有写工具返回 WRITE_DISABLED。"
+                            : "点击切换到修改模型。默认为浏览模型。") +
+                        (escapeHatch
+                            ? "\n\n⚠ 逃生舱已开启：revit_invoke_api 与 revit_execute_script 可用，" +
+                              "它们能在 Revit 进程里执行任意代码。" +
+                              "不需要时请在 config.json 里把 escapeHatchEnabled 改回 false。"
+                            : string.Empty);
 
                     var glyph = writeEnabled ? Glyph.LockOpen : Glyph.LockClosed;
-                    var color = writeEnabled ? IconFactory.Warning : IconFactory.Idle;
+
+                    // 逃生舱开着时一律用警示色，哪怕当前是浏览模式——
+                    // 那个开关的影响面本来就不止于"改不改模型"
+                    var color = writeEnabled || escapeHatch ? IconFactory.Warning : IconFactory.Idle;
 
                     _writeModeButton.LargeImage = IconFactory.Create(glyph, color, 32);
                     _writeModeButton.Image = IconFactory.Create(glyph, color, 16);

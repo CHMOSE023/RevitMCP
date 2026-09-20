@@ -10,7 +10,7 @@ namespace RevitMCP.Addin.Tools
 {
     public sealed class DeleteElementsInput
     {
-        [McpParam("要删除的构件 ID 列表", Required = true)]
+        [McpParam("要删除的构件 ID 列表。ElementId 与 uniqueId 两种写法都接受", Required = true)]
         public List<string> ElementIds { get; set; }
 
         [McpParam("删除必须显式确认。第一次调用不带它，工具会告诉你实际会删掉什么（含被连带删除的构件）；" +

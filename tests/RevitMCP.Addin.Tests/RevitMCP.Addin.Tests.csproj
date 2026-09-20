@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    工具契约测试：把 Addin 里注册的工具当**数据**来检查。
+
+    刻意不加载 Addin 程序集去执行。试过那条路：工具类继承自
+    McpTool<UIApplication, ...>，类型加载会去解析 RevitAPIUI，
+    而它又引用 AdWindows / UIFramework / RevitDBAPI 等 30 个
+    只存在于 Revit 安装目录里的程序集——等于要求 CI 机器装着 Revit。
+
+    改用 MetadataLoadContext：只读元数据，不解析执行期依赖。
+    契约测试要的恰好只有元数据（特性上的名字、描述、取值、标志），
+    所以这个限制一点都不碍事，换来的是它能在任何机器上跑。
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(RevitTargetFramework)</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputPath>$(MSBuildThisFileDirectory)bin\</OutputPath>
+    <RootNamespace>RevitMCP.Addin.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 只为拿到编译好的 RevitMCP.Addin.dll 与构建顺序；测试不会去加载它执行 -->
+    <ProjectReference Include="..\..\src\RevitMCP.Addin\RevitMCP.Addin.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Revit 的引用程序集也要在输出目录里：MetadataLoadContext 读 Addin 的类型时，
+      会碰到 RevitTool<,> 的基类型 McpTool<UIApplication, ...>，需要解析 RevitAPIUI 的元数据。
+
+      引用程序集**正合适**——它有完整元数据、没有方法体，而这里从头到尾只读元数据。
+      （把它拿去执行则不行：RevitAPIUI 引用了 AdWindows / UIFramework 等 30 个
+      只存在于 Revit 安装目录里的程序集。那正是这个测试改用 MetadataLoadContext 的原因。）
+    -->
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="$(RevitApiVersion)" ExcludeAssets="all" GeneratePathProperty="true" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="$(RevitApiVersion)" ExcludeAssets="all" GeneratePathProperty="true" />
+
+    <None Include="$(NuGetPackageRoot)nice3point.revit.api.revitapi\$(RevitApiVersion)\ref\$(RevitTargetFramework)\RevitAPI.dll"
+          CopyToOutputDirectory="PreserveNewest" Link="RevitAPI.dll" Visible="false" />
+    <None Include="$(NuGetPackageRoot)nice3point.revit.api.revitapiui\$(RevitApiVersion)\ref\$(RevitTargetFramework)\RevitAPIUI.dll"
+          CopyToOutputDirectory="PreserveNewest" Link="RevitAPIUI.dll" Visible="false" />
+  </ItemGroup>
+</Project>

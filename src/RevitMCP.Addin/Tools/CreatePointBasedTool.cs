@@ -40,6 +40,12 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("翻转左右（门的开启方向），默认 false")]
         public bool? HandFlipped { get; set; }
+
+        [McpParam("结构类型：NonStructural / Column / Beam / Brace / Footing。" +
+                  "省略时按类别推断——结构柱推断为 Column、基础推断为 Footing、其余为 NonStructural。" +
+                  "推断错了会得到一个没有结构行为、也没有分析模型的构件，所以拿不准时显式给它",
+                  AllowedValues = new[] { "NonStructural", "Column", "Beam", "Brace", "Footing" })]
+        public string StructuralType { get; set; }
     }
 
     public sealed class CreatePointBasedInput
@@ -179,11 +185,12 @@ namespace RevitMCP.Addin.Tools
                 Units.ToFeet(spec.LocationPoint.Y),
                 level.Elevation + Units.ToFeet(aboveLevelMm));
 
+            var structuralType = ResolveStructuralType(spec, symbol, index);
+
             FamilyInstance instance;
             try
             {
-                instance = document.Create.NewFamilyInstance(
-                    point, symbol, level, StructuralType.NonStructural);
+                instance = document.Create.NewFamilyInstance(point, symbol, level, structuralType);
             }
             catch (Exception ex)
             {
@@ -200,6 +207,54 @@ namespace RevitMCP.Addin.Tools
                 Rotate(document, instance, point, spec.Rotation.Value, index);
 
             return instance;
+        }
+
+        /// <summary>
+        /// 定出用哪种结构类型创建实例。
+        ///
+        /// 这件事不能一律填 NonStructural：结构柱、基础、支撑若以非结构身份创建，
+        /// 拿到的是一个**看起来对、但没有结构行为也没有分析模型**的构件，
+        /// 结构专业的明细表、荷载与分析全部会漏掉它，而模型上完全看不出异样。
+        /// 有些结构族甚至会因此直接创建失败。
+        /// </summary>
+        private static StructuralType ResolveStructuralType(
+            PointBasedElementSpec spec, FamilySymbol symbol, int index)
+        {
+            if (!string.IsNullOrWhiteSpace(spec.StructuralType))
+            {
+                StructuralType parsed;
+                if (!Enum.TryParse(spec.StructuralType.Trim(), ignoreCase: true, out parsed) ||
+                    !Enum.IsDefined(typeof(StructuralType), parsed))
+                    throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
+                        "无法识别的 structuralType \"" + spec.StructuralType +
+                        "\"。可用值：NonStructural、Column、Beam、Brace、Footing。");
+
+                return parsed;
+            }
+
+            return InferStructuralType(symbol);
+        }
+
+        /// <summary>按类型所属类别推断结构类型。推断不出来时退回 NonStructural。</summary>
+        private static StructuralType InferStructuralType(FamilySymbol symbol)
+        {
+            var categoryId = symbol?.Category?.Id;
+            if (categoryId == null) return Autodesk.Revit.DB.Structure.StructuralType.NonStructural;
+
+            switch ((BuiltInCategory)categoryId.GetValue())
+            {
+                case BuiltInCategory.OST_StructuralColumns:
+                    return Autodesk.Revit.DB.Structure.StructuralType.Column;
+
+                case BuiltInCategory.OST_StructuralFraming:
+                    return Autodesk.Revit.DB.Structure.StructuralType.Beam;
+
+                case BuiltInCategory.OST_StructuralFoundation:
+                    return Autodesk.Revit.DB.Structure.StructuralType.Footing;
+
+                default:
+                    return Autodesk.Revit.DB.Structure.StructuralType.NonStructural;
+            }
         }
 
         private static Wall ResolveHostWall(

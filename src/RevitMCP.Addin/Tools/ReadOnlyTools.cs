@@ -209,6 +209,16 @@ namespace RevitMCP.Addin.Tools
         [McpParam("只返回该点附近的构件，结果按距离从近到远排列。与 withinBox 只能给一个")]
         public NearFilter Near { get; set; }
 
+        [McpParam("只返回在这个阶段创建的构件，ID 来自 revit_list_phases。" +
+                  "**改造项目做统计必须给它**：同一位置的「现有」与「新建」是两个构件，" +
+                  "不限阶段会把它们一起数进去，数量翻倍而结果看起来一切正常")]
+        public string PhaseId { get; set; }
+
+        [McpParam("只返回属于这个设计选项的构件，ID 来自 revit_list_design_options。" +
+                  "传 \"main\" 表示只要主模型（不属于任何设计选项的那些）。" +
+                  "多方案模型不限它会把几套方案一起数进去")]
+        public string DesignOptionId { get; set; }
+
         [McpParam("最多返回多少条，默认 100，上限 1000。超出部分通过 truncated 字段告知")]
         public int? Limit { get; set; }
     }
@@ -291,6 +301,15 @@ namespace RevitMCP.Addin.Tools
 
             var named = collector.Where(e => MatchesName(e, input.NameContains));
 
+            // 阶段与设计选项的过滤放在托管侧而不是 ElementPhaseStatusFilter：
+            // 后者问的是"在这个阶段是什么状态"（新建/现有/已拆），
+            // 而这里要的是更直白的"是在这个阶段创建的"——两者在改造项目上会给出不同的集合
+            var phase = ResolvePhase(document, input.PhaseId);
+            if (phase != null) named = named.Where(e => CreatedInPhase(e, phase.Value));
+
+            var designOption = ResolveDesignOption(document, input.DesignOptionId);
+            if (designOption != null) named = named.Where(e => InDesignOption(e, designOption.Value));
+
             var matched = input.Near != null
                 ? RefineByDistance(named, input.Near)
                 : named.Select(e => new Match { Element = e }).ToList();
@@ -318,6 +337,71 @@ namespace RevitMCP.Addin.Tools
         {
             public Element Element;
             public double? DistanceMm;
+        }
+
+        /// <summary>解析阶段 ID。返回 null 表示不按阶段过滤。</summary>
+        private static long? ResolvePhase(Document document, string rawId)
+        {
+            if (string.IsNullOrWhiteSpace(rawId)) return null;
+
+            var element = RequireElement(document, rawId);
+            var phase = element as Phase;
+
+            if (phase == null)
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "phaseId " + rawId + " 不是阶段，而是「" +
+                    (element.Category?.Name ?? element.GetType().Name) +
+                    "」。用 revit_list_phases 取阶段 ID。");
+
+            return phase.Id.GetValue();
+        }
+
+        private static bool CreatedInPhase(Element element, long phaseId)
+        {
+            try
+            {
+                var parameter = element.get_Parameter(BuiltInParameter.PHASE_CREATED);
+                if (parameter == null || !parameter.HasValue) return false;
+
+                var id = parameter.AsElementId();
+                return id != null && id.GetValue() == phaseId;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 解析设计选项 ID。特殊值 "main" 表示主模型，用 <see cref="ElementId.InvalidElementId"/>
+        /// 的值表示——不属于任何设计选项的构件，<c>DesignOption</c> 恰好是 null。
+        /// </summary>
+        private static long? ResolveDesignOption(Document document, string rawId)
+        {
+            if (string.IsNullOrWhiteSpace(rawId)) return null;
+
+            if (string.Equals(rawId.Trim(), "main", StringComparison.OrdinalIgnoreCase))
+                return ElementId.InvalidElementId.GetValue();
+
+            var element = RequireElement(document, rawId);
+            var option = element as DesignOption;
+
+            if (option == null)
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "designOptionId " + rawId + " 不是设计选项，而是「" +
+                    (element.Category?.Name ?? element.GetType().Name) +
+                    "」。用 revit_list_design_options 取 ID，或传 \"main\" 表示只要主模型。");
+
+            return option.Id.GetValue();
+        }
+
+        private static bool InDesignOption(Element element, long optionId)
+        {
+            try
+            {
+                var id = element.DesignOption?.Id;
+                var actual = id == null ? ElementId.InvalidElementId.GetValue() : id.GetValue();
+
+                return actual == optionId;
+            }
+            catch { return false; }
         }
 
         private static Outline BuildOutline(QueryElementsInput input)
@@ -421,7 +505,7 @@ namespace RevitMCP.Addin.Tools
                   "一个 Revit 可以同时开着多个项目，批量检查靠它逐个指定")]
         public string DocumentId { get; set; }
 
-        [McpParam("要读取的构件 ID 列表（字符串形式，来自 revit_query_elements）", Required = true)]
+        [McpParam("要读取的构件 ID 列表（字符串形式，来自 revit_query_elements）。ElementId 与 uniqueId 两种写法都接受", Required = true)]
         public List<string> ElementIds { get; set; }
 
         [McpParam("只返回名称包含该文本的参数（不区分大小写）。模型参数很多，建议过滤")]
@@ -433,14 +517,23 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ElementParameters
     {
-        [McpParam("构件 ID")]
+        [McpParam("构件 ID（只在本文档的本次会话内有效）")]
         public string Id { get; set; }
+
+        [McpParam("构件的 UniqueId，跨会话稳定。要把这个构件记进报告里就存它")]
+        public string UniqueId { get; set; }
 
         [McpParam("构件名称")]
         public string Name { get; set; }
 
         [McpParam("所属类别")]
         public string Category { get; set; }
+
+        [McpParam("结构类型：NonStructural / Column / Beam / Brace / Footing / UnknownFraming。" +
+                  "只有族实例才有，其余构件为 null。" +
+                  "**它不是参数，在「属性」面板上看不到**——一根结构行为缺失的柱子，" +
+                  "在模型里和正常的柱子长得一模一样，只有这个字段能把两者分开")]
+        public string StructuralType { get; set; }
 
         [McpParam("实例参数")]
         public List<ParameterValue> Parameters { get; set; } = new List<ParameterValue>();
@@ -489,24 +582,22 @@ namespace RevitMCP.Addin.Tools
                 done++;
                 ProgressTicker.Tick(context.Progress, done, total, "已读取");
 
-                if (!ElementIdCompat.TryParse(raw, out var elementId))
-                {
-                    output.NotFound.Add(raw + "（ID 格式非法）");
-                    continue;
-                }
+                string problem;
+                var element = ElementRef.Resolve(document, raw, out problem);
 
-                var element = document.GetElement(elementId);
                 if (element == null)
                 {
-                    output.NotFound.Add(raw + "（模型中不存在）");
+                    output.NotFound.Add(raw + "（" + problem + "）");
                     continue;
                 }
 
                 var entry = new ElementParameters
                 {
-                    Id = elementId.ToProtocolString(),
+                    Id = element.Id.ToProtocolString(),
+                    UniqueId = ElementRef.UniqueIdOf(element),
                     Name = TryName(element),
                     Category = element.Category?.Name,
+                    StructuralType = StructuralTypeOf(element),
                     Parameters = ReadParameters(element, input.NameContains)
                 };
 

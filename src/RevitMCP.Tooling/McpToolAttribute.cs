@@ -64,5 +64,17 @@ namespace RevitMCP.Tooling
 
         /// <summary>是否必填。值类型默认必填，可空类型与引用类型默认可选。</summary>
         public bool Required { get; set; }
+
+        /// <summary>
+        /// 这个参数只接受这几个值，会原样生成为 JSON Schema 的 <c>enum</c>。
+        ///
+        /// 判别式参数（operation / kind / viewType 这类）必须写它。
+        /// 把取值只写在 <see cref="Description"/> 的散文里，等于要求调用方
+        /// 从一段自然语言中把枚举抠出来——而 schema 里的 <c>enum</c>
+        /// 能让客户端直接做约束，这一类错误本就不该发生在运行期。
+        ///
+        /// 顺序即推荐顺序：默认值放第一个。
+        /// </summary>
+        public string[] AllowedValues { get; set; }
     }
 }

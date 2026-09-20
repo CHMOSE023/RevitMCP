@@ -122,16 +122,18 @@ namespace RevitMCP.Addin.Tools
         /// </summary>
         protected static Element RequireElement(Document document, string rawId)
         {
-            if (!ElementIdCompat.TryParse(rawId, out var elementId))
-                throw new ToolFailureException(McpDomainError.InvalidParameter,
-                    "构件 ID \"" + rawId + "\" 格式非法，应为十进制整数的字符串形式。");
+            string problem;
+            var element = ElementRef.Resolve(document, rawId, out problem);
 
-            var element = document.GetElement(elementId);
-            if (element == null)
-                throw new ToolFailureException(McpDomainError.ElementNotFound,
-                    "模型中不存在 ID 为 " + rawId + " 的构件。请先用 revit_query_elements 确认 ID。");
+            if (element != null) return element;
 
-            return element;
+            // 格式不对是参数问题，构件不在是查找问题——两者的补救动作不同，
+            // 错误码必须分开：前者要改写法，后者要重新查一次
+            var code = problem != null && problem.Contains("格式")
+                ? McpDomainError.InvalidParameter
+                : McpDomainError.ElementNotFound;
+
+            throw new ToolFailureException(code, problem);
         }
 
         /// <summary>
@@ -216,10 +218,33 @@ namespace RevitMCP.Addin.Tools
                     break;
             }
 
-            try { result.DisplayValue = parameter.AsValueString(); }
-            catch { /* 某些参数类型不支持，不值得让整个读取失败 */ }
+            // 显示值必须和写工具回执里的 oldValue/newValue 来自同一个函数。
+            //
+            // 这里曾经直接调 AsValueString()，而**文本参数的 AsValueString() 返回 null**——
+            // 于是写工具回执说 newValue="探针值"，读工具却把 displayValue 交成 null。
+            // 调用方读参数时最自然的选择就是 displayValue，看到 null 会判定"这个参数是空的"，
+            // 而原始值明明就在旁边的 value 里。两套实现长歪的代价就是这种自相矛盾。
+            result.DisplayValue = ParameterWriter.DisplayOf(parameter);
 
             return result;
+        }
+
+        /// <summary>
+        /// 族实例的结构类型。
+        ///
+        /// 单独读出来，是因为它**不是参数**——<c>FamilyInstance.StructuralType</c>
+        /// 在「属性」面板上没有对应的行，把参数列表整个翻一遍也找不到它。
+        /// 而一根被当成非结构建出来的柱子，几何、类型、参数全都正常，
+        /// 只有它缺了结构行为与分析模型：结构专业的明细表、荷载与分析会整个漏掉它。
+        /// 不把这个值交出来，这种错误没有任何办法从模型外部发现。
+        /// </summary>
+        protected static string StructuralTypeOf(Element element)
+        {
+            var instance = element as FamilyInstance;
+            if (instance == null) return null;
+
+            try { return instance.StructuralType.ToString(); }
+            catch { return null; }
         }
 
         protected static ElementSummary Summarize(Element element)
@@ -227,6 +252,7 @@ namespace RevitMCP.Addin.Tools
             return new ElementSummary
             {
                 Id = element.Id.ToProtocolString(),
+                UniqueId = ElementRef.UniqueIdOf(element),
                 Name = SafeName(element),
                 Category = element.Category?.Name,
                 TypeId = element.GetTypeId()?.ToProtocolString(),
@@ -246,8 +272,15 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class ElementSummary
     {
-        [McpParam("构件 ID（字符串形式）")]
+        [McpParam("构件 ID（字符串形式）。**只在这一个文档的这一次会话里有效**——" +
+                  "要跨会话留存（写进审计报告、交付清单）请用 uniqueId")]
         public string Id { get; set; }
+
+        [McpParam("构件的 UniqueId，Revit 维护的 GUID。跨会话、跨 Revit 重启都稳定，" +
+                  "导出 IFC 后也能对应回来。所有接受构件 ID 的工具都同样接受它。" +
+                  "**隔天还要用的 ID 一律存这个**——ElementId 那串数字第二天会指向别的构件，" +
+                  "而且看起来完全正常")]
+        public string UniqueId { get; set; }
 
         [McpParam("构件名称")]
         public string Name { get; set; }

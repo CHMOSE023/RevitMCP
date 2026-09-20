@@ -72,7 +72,7 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class SetSelectionInput
     {
-        [McpParam("要选中的构件 ID 列表。传空数组表示清空选择", Required = true)]
+        [McpParam("要选中的构件 ID 列表。传空数组表示清空选择。ElementId 与 uniqueId 两种写法都接受", Required = true)]
         public List<string> ElementIds { get; set; }
 
         [McpParam("true 表示追加到现有选择，默认 false（替换）")]

@@ -21,7 +21,8 @@ namespace RevitMCP.Addin.Tools
         [McpParam("图片宽度（像素），默认 1920，上限 8000")]
         public int? PixelWidth { get; set; }
 
-        [McpParam("图片格式：png（默认）或 jpg")]
+        [McpParam("图片格式：png（默认）或 jpg",
+                  AllowedValues = new[] { "png", "jpg" })]
         public string ImageType { get; set; }
     }
 

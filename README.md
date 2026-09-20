@@ -3,11 +3,17 @@
 把当前打开的 Revit 文档暴露给 MCP 客户端（Claude Code / Claude Desktop）的插件框架。
 **纯 C# 单进程**——MCP 服务直接跑在 Revit 进程内，没有额外的桥接进程。
 
-支持 **Revit 2019 – 2024**。架构设计见 [docs/architecture.md](docs/architecture.md)。
+支持 **Revit 2019 – 2024**。
+架构设计见 [docs/architecture.md](docs/architecture.md)；
+与 `revit-bridge-addin` 的逐条能力对照见 [docs/bridge-parity.md](docs/bridge-parity.md)，
+它由 [`build/check-parity.ps1`](build/check-parity.ps1) 生成并校验——
+工具改了名、或者对方增删了命令，脚本会当场报错而不是悄悄生成一份看起来仍然正确的文档。
 
-> 当前进度：**M9 完成并已在 Revit 2019 实测通过**。
-> 企业标准可执行化 + 跨文档批量审计——一个会话把 Revit 里开着的十几个模型过一遍标准，产出汇总。
-> 共 28 个工具：17 个只读 + 11 个写。
+> 当前进度：**M10 能力补齐完成**。
+> 在 M9（企业标准可执行化 + 跨文档批量审计）的基础上，
+> 把图元变换、视图与标注、交付导出、协同与链接、阶段与设计选项、
+> 参数定义、材质、基准图元、MEP、碰撞检查整块补上。
+> 共 68 个工具：29 个只读 + 39 个写（含 2 个默认关闭的逃生舱）。
 
 ---
 
@@ -45,7 +51,7 @@ claude mcp add --transport http revit http://127.0.0.1:7801/mcp --header "Author
 ```
 
 ```bash
-# 跑不依赖 Revit 的测试（协议 33 + 调度与工具框架 128 + HTTP/MCP 端到端 54）
+# 跑不依赖 Revit 的测试（协议 33 + 工具框架 139 + 工具契约 147 + HTTP/MCP 端到端 54）
 dotnet test RevitMCP.sln -c "Debug R24"
 ```
 
@@ -82,42 +88,102 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 
 ## 现有工具
 
-**查看模型**
+68 个工具：**29 个只读 + 39 个写**。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
+
+### 查看模型
 
 | 工具 | 作用 |
 |---|---|
 | `revit_get_document_info` | 当前文档标题、路径、活动视图、写入模式是否开启 |
 | `revit_list_documents` | 这个 Revit 里打开的所有文档。批量审计从它开始 |
 | `revit_get_project_units` | 项目的长度/面积/体积显示单位，以及它与工具单位是否一致 |
+| `revit_get_project_location` | 经纬度、时区、测量点偏移、正北角。导 IFC/NWC 前核对它 |
 | `revit_list_categories` | 模型中实际存在构件的类别及数量（查询前先用它确认类别名）|
 | `revit_list_types` | 按类别列出族类型及其 ID、厚度、使用数量——建模前靠它挑规格 |
+| `revit_list_families` | 已载入的族及其类型数。建模前确认目标族在不在项目里 |
 | `revit_list_levels` | 标高的 ID、名称、高程，建模时的 `levelId` 从这里来 |
-| `revit_query_elements` | 按类别查构件，返回 ID / 名称 / 类型 / 标高 |
+| `revit_query_elements` | 按类别/空间/阶段/设计选项查构件，返回 ID / 名称 / 类型 / 标高 |
 | `revit_get_element_parameters` | 批量读参数，同时给出原始值与带单位的显示值 |
-| `revit_get_warnings` | Revit 自己记录的模型警告，按种类归组——质检闭环的地基 |
-| `revit_list_rooms` | 房间及其面积（㎡）、周长、边界。面积为 0 直接点出"没围合" |
 | `revit_get_element_geometry` | 包围盒、定位线/点、朝向。**不返回网格** |
+| `revit_get_warnings` | Revit 自己记录的模型警告，按种类归组——质检闭环的地基 |
+| `revit_check_clashes` | 硬碰撞检查（实体真的相交），支持跨链接模型 |
+| `revit_list_rooms` | 房间及其面积（㎡）、周长、边界。面积为 0 直接点出"没围合" |
+| `revit_list_materials` | 材质及其 ID、类别、颜色。设材质用的就是这里的 ID |
+| `revit_calculate_material_quantities` | 按材质汇总体积与面积，数字与明细表一致 |
+| `revit_list_groups` | 组实例及其成员数、同类型实例数（改一个会联动几个）|
 | `revit_list_views` | 视图与图纸及其类型、比例、所在图纸 |
-| `revit_export_image` | 把视图或图纸导成图片落盘，返回完整路径 |
+| `revit_list_view_templates` | 视图样板及其适用的视图类型 |
+| `revit_get_sheet_contents` | 图纸上放了哪些视图、用什么图签、可写参数名有哪些 |
+| `revit_list_revisions` | 修订序列及其编号、日期、发布状态 |
 | `revit_read_schedule` | 把明细表读成表格数据 |
 | `revit_list_schedulable_fields` | 某类别做明细表能选哪些字段（字段名随项目语言，别猜）|
+| `revit_list_worksets` | 工作集及其开关状态。**关闭的工作集里的构件查不到** |
+| `revit_list_links` | 链接模型及其载入状态。里面的构件要用 `linkedDocumentId` 才查得到 |
+| `revit_list_phases` | 阶段序列。改造项目统计前必看，否则"现有"和"新建"会一起数 |
+| `revit_list_design_options` | 设计选项。多方案模型统计前必看 |
+| `revit_list_project_parameters` | 已绑定的项目参数及其类型、绑定方式、绑定到哪些类别 |
+| `revit_list_mep_systems` | MEP 系统与系统类型。建管线前查 `systemTypeId` |
+| `revit_get_model_changes` | 自上次 token 以来新增/修改/删除了什么。增量同步用 |
 | `revit_get_selection` | 用户此刻在 Revit 里选中了什么 |
+| `revit_export_image` | 把视图或图纸导成图片落盘，返回完整路径 |
+| `revit_export_documents` | 导 DWG / DXF / PDF / IFC / NWC |
+| `revit_export_schedules` | 把明细表导成 CSV / TSV / TXT |
 
-**改模型**（需要用户在 Ribbon 上切到「修改模型」）
+### 改模型
 
 | 工具 | 作用 |
 |---|---|
 | `revit_create_line_based_elements` | 按定位线批量建墙、梁 |
-| `revit_create_point_based_elements` | 按插入点批量建门、窗、家具 |
+| `revit_create_point_based_elements` | 按插入点批量建门、窗、柱、基础、家具 |
 | `revit_create_surface_based_elements` | 按闭合边界批量建楼板、屋顶、天花 |
+| `revit_create_mep_curves` | 按定位线批量建风管、水管、线管、桥架 |
+| `revit_create_datums` | 建轴网与标高（标高默认连楼层平面一起建）|
 | `revit_create_rooms` | 按点批量建房间，回执直接给出面积 |
-| `revit_create_sheets` | 批量建图纸 |
-| `revit_create_schedule` | 按类别建明细表，选字段、排序 |
+| `revit_create_materials` | 建材质。**尽量从已有材质复制**，空白新建的没有物理与外观资源 |
+| `revit_create_project_parameter` | 建项目参数并绑定到类别（API 只能造共享参数，见下）|
+| `revit_transform_elements` | 平移 / 复制 / 旋转 / 镜像 |
+| `revit_set_elements_pinned` | 钉住 / 解钉。轴网标高移不动时先查它 |
+| `revit_group_elements` | 打组 / 打散 |
+| `revit_change_element_types` | 换构件类型，可按 ID 也可按原类型整批换 |
 | `revit_duplicate_type` | 复制族类型并改厚度/参数——「类型属性」里那个「复制」按钮 |
-| `revit_add_views_to_sheet` | 把视图或明细表摆到图纸上，回读实际位置并检查越界 |
-| `revit_activate_view` | 切换活动视图（改界面不改模型，见下） |
+| `revit_set_type_parameters` | 批量改类型参数。回执给出实际波及的构件数 |
 | `revit_set_element_parameters` | 批量改同一个参数，全有全无 |
+| `revit_batch_set_parameters` | 按条件匹配 + 一次写多个参数的完整形态 |
+| `revit_create_views` | 建平面 / 剖面 / 立面 / 三维视图 |
+| `revit_apply_view_template` | 批量套 / 取消视图样板 |
+| `revit_create_sheets` | 批量建图纸 |
+| `revit_duplicate_sheets` | 复制图纸（含视图与详图，语义见回执的 `method`）|
+| `revit_update_sheets` | 改图纸编号、名称、图签。**成批改号自动走两阶段防撞** |
+| `revit_add_views_to_sheet` | 把视图或明细表摆到图纸上，回读实际位置并检查越界 |
+| `revit_create_schedule` | 按类别建明细表，选字段、排序 |
+| `revit_create_annotations` | 建文字、标记、尺寸标注、修订云线 |
+| `revit_tag_all_in_view` | 在视图里按类别批量标记 |
+| `revit_activate_view` | 切换活动视图（改界面不改模型，见下） |
 | `revit_delete_elements` | 删除构件，先预览连带影响再确认 |
+| `revit_open_document` | 打开文件 / 从样板新建 / 打开族来编辑 |
+| `revit_save_document` | 保存或另存为 |
+| `revit_close_document` | 关闭文档（关活动文档时自动先切走）|
+| `revit_sync_to_central` | 同步到中心文件 / 放弃编辑权。`confirm` 必填 |
+
+### 逃生舱（默认关闭）
+
+| 工具 | 作用 |
+|---|---|
+| `revit_invoke_api` | 反射调用任意 Revit API |
+| `revit_execute_script` | 编译并执行一段 C# 代码 |
+
+这两个绕开了本项目其余部分的全部保证——没有单位换算、没有校验、没有规模闸。
+它们**不跟着 Ribbon 上的写入开关走**，需要在 `config.json` 里单独把 `escapeHatchEnabled`
+设为 true 并重启 Revit。开着时 Ribbon 上的操作模式按钮会一直显示警示色。
+
+理由是它们的影响面根本不止于"改模型"：能读写任何文件、发任何网络请求。
+把这种能力和"我要建一面墙"放在同一个开关下面，那个开关就失去意义了。
+
+**为什么是 C# 不是 Python。** 本项目全程零第三方依赖——Revit 把所有插件加载进同一个
+AppDomain 且不应用插件自己的绑定重定向（架构 §2 的 C2），引入 IronPython 就必须
+同时引入 ILRepack 那一整套内联化设施。而 .NET Framework 自带的 `CSharpCodeProvider`
+提供同样的"执行任意代码"能力、零依赖，脚本里用的还是 Revit API 本身的类型，
+不需要跨语言的类型映射。
 
 ### 工具分三类，不是两类
 
@@ -134,6 +200,19 @@ src/RevitMCP.Addin       Revit 插件入口、Ribbon、ExternalEvent 接线、�
 判据是**会不会改变别人的答案**：切换活动视图会改变 `activeViewOnly` 查询和"导出当前视图"的结果，
 而选择集不会。`revit_export_image` 虽然往磁盘写文件，但不改模型也不改别的工具的答案，
 所以仍是只读——只读的质检流程恰恰最需要截图，要求先开修改模式才能截个图说不通。
+
+### 构件怎么指代：ElementId 与 uniqueId
+
+两种写法在**所有**接受构件 ID 的地方都能用：
+
+| | 形如 | 适用范围 |
+|---|---|---|
+| `ElementId` | `"225318"` | 短，读着顺。**只在这一个文档的这一次会话里有效** |
+| `uniqueId` | `"c0326e0e-…-0000d2d5"` | Revit 维护的 GUID，跨会话、跨重启稳定，导出 IFC 后也对得上 |
+
+查询回执两个都给。**要跨会话留存的东西一律存 uniqueId**——
+审计报告里的问题清单、交付物里的构件索引，用 ElementId 记下来，
+第二天拿出来会指向完全不同的构件，而且看起来完全正常。
 
 ### 一个 Revit 能同时开十几个模型
 
@@ -261,6 +340,21 @@ public sealed class DoSomethingInput
 前三个项目刻意不依赖 Revit API，这不只是洁癖：**整条 HTTP + MCP 通路能在没装 Revit 的机器上
 端到端测试**，CI 因此能覆盖大部分逻辑。
 
+### 工具契约
+
+`tests/RevitMCP.Addin.Tests` 对**每一个**工具、**每一个**参数做同一组断言：
+描述不能空、判别式参数的取值必须进 schema 的 `enum`、描述里提到的工具名必须真实存在、
+长度参数必须写单位、只读工具不能同时声明破坏性……
+
+这些性质单看任何一个工具都显然成立，问题出在"每一个"上。68 个工具、900 多个参数，
+靠人肉扫一遍能扫出什么，实测过一次：21 个判别式参数的取值只写在中文描述里、
+schema 上是个裸 string，是手工审计才发现的。
+
+它用 `MetadataLoadContext` 把 Addin 当**数据**读，不加载 Revit——
+试过直接反射加载，工具类的基类 `McpTool<UIApplication, …>` 会去解析 RevitAPIUI，
+而它又引用 AdWindows / UIFramework 等 30 个只存在于 Revit 安装目录里的程序集。
+读元数据没有这个问题，而契约要检查的恰好只有元数据。
+
 ## 进度通知
 
 长操作（批量改几百个构件之类）会通过 SSE 推 `notifications/progress`，
@@ -353,6 +447,7 @@ powershell -File workflows/m9-batch.ps1 -Standard workflows/standards/示例企�
 | [`m8-delivery.ps1`](workflows/m8-delivery.ps1) | 建图纸摆视图 → 导出 PNG → 验证路径闸 → 质检 → 写出一份带截图的 Markdown 报告 |
 | [`m9-audit.ps1`](workflows/m9-audit.ps1) | 把一份企业标准跑在一个模型上，产出合规报告 |
 | [`m9-batch.ps1`](workflows/m9-batch.ps1) | 把同一份标准跑遍所有打开的文档，汇总出"哪条规则最常被违反" |
+| [`m10-parity.ps1`](workflows/m10-parity.ps1) | 把 **68 个工具全部**在真实模型上调一遍，96 项检查逐项记分。验的是**覆盖面**而不是某一条闭环——bridge 的 110 条映射命令全部有实测走到 |
 | [`McpClient.ps1`](workflows/McpClient.ps1) | 连接与调用辅助：自动发现本机实例、读取令牌、走 modern era 无状态调用 |
 
 ```bash

@@ -13,14 +13,14 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class SetParametersInput
     {
-        [McpParam("要修改的构件 ID 列表（字符串形式，来自 revit_query_elements）", Required = true)]
+        [McpParam("要修改的构件 ID 列表（字符串形式，来自 revit_query_elements）。ElementId 与 uniqueId 两种写法都接受", Required = true)]
         public List<string> ElementIds { get; set; }
 
         [McpParam("参数名，须与 revit_get_element_parameters 返回的名称完全一致", Required = true)]
         public string ParameterName { get; set; }
 
         [McpParam("要写入的值，一律用字符串传递。数值按项目显示单位解释（如长度 \"3000\" 即 3000 毫米）；" +
-                  "是/否类参数可用 true/false 或 是/否；ElementId 类参数传目标构件的 ID", Required = true)]
+                  "是/否类参数可用 true/false 或 是/否；ElementId 类参数（材质、标高这类）传目标构件的 ID，传 -1 或空字符串表示清空", Required = true)]
         public string Value { get; set; }
 
         [McpParam("影响构件数超过上限时，带上 true 表示确认后再执行")]

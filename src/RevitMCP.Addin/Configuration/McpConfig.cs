@@ -20,6 +20,17 @@ namespace RevitMCP.Addin.Configuration
         public bool AutoStart { get; set; } = true;
         public string Token { get; set; }
         public bool WriteEnabled { get; set; } = false;
+
+        /// <summary>
+        /// 逃生舱（revit_invoke_api / revit_execute_script）的总闸。
+        ///
+        /// 它们等于允许调用方在 Revit 进程里执行任意代码——
+        /// 能读写任何文件、发任何网络请求，远超出「改模型」的范围。
+        /// 所以它不跟着 <see cref="WriteEnabled"/> 走，而是单独一道闸，
+        /// 且只能改配置文件——Ribbon 上不提供一键开启，
+        /// 开启它应当是一个需要停下来想一想的动作。
+        /// </summary>
+        public bool EscapeHatchEnabled { get; set; } = false;
         public int MaxElementsPerWrite { get; set; } = 500;
         public int DefaultToolTimeoutSeconds { get; set; } = 60;
         public List<string> DisabledTools { get; set; } = new List<string>();
@@ -69,6 +80,7 @@ namespace RevitMCP.Addin.Configuration
                 config.AutoStart = ReadBool(root, "autoStart", config.AutoStart);
                 config.Token = ReadString(root, "token", null);
                 config.WriteEnabled = ReadBool(root, "writeEnabled", config.WriteEnabled);
+                config.EscapeHatchEnabled = ReadBool(root, "escapeHatchEnabled", config.EscapeHatchEnabled);
                 config.MaxElementsPerWrite = ReadInt(root, "maxElementsPerWrite", config.MaxElementsPerWrite);
                 config.DefaultToolTimeoutSeconds = ReadInt(root, "defaultToolTimeoutSeconds", config.DefaultToolTimeoutSeconds);
                 config.DisabledTools = ReadStringList(root, "disabledTools", config.DisabledTools);
@@ -105,6 +117,7 @@ namespace RevitMCP.Addin.Configuration
                 .Set("autoStart", AutoStart)
                 .Set("token", Token ?? string.Empty)
                 .Set("writeEnabled", WriteEnabled)
+                .Set("escapeHatchEnabled", EscapeHatchEnabled)
                 .Set("maxElementsPerWrite", MaxElementsPerWrite)
                 .Set("defaultToolTimeoutSeconds", DefaultToolTimeoutSeconds)
                 .Set("disabledTools", ToArray(DisabledTools))

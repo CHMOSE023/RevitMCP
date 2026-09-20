@@ -100,7 +100,7 @@ namespace RevitMCP.Addin.Tools
         [McpParam("只返回描述中包含该文本的警告（不区分大小写）")]
         public string DescriptionContains { get; set; }
 
-        [McpParam("只返回与该构件相关的警告。用来回答「这个构件现在有什么问题」")]
+        [McpParam("只返回与该构件相关的警告。用来回答「这个构件现在有什么问题」。ElementId 与 uniqueId 两种写法都接受")]
         public string ElementId { get; set; }
 
         [McpParam("最多返回多少组，默认 50。同一种警告归为一组")]

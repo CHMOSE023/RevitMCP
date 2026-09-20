@@ -60,7 +60,7 @@ namespace RevitMCP.Addin.Tools
 
     public sealed class GetGeometryInput
     {
-        [McpParam("要查询的构件 ID 列表", Required = true)]
+        [McpParam("要查询的构件 ID 列表。ElementId 与 uniqueId 两种写法都接受", Required = true)]
         public List<string> ElementIds { get; set; }
 
         [McpParam("是否返回包围盒，默认 true")]
@@ -116,17 +116,12 @@ namespace RevitMCP.Addin.Tools
                 done++;
                 ProgressTicker.Tick(context.Progress, done, total, "已读取");
 
-                ElementId elementId;
-                if (!ElementIdCompat.TryParse(raw, out elementId))
-                {
-                    output.NotFound.Add(raw + "（ID 格式非法）");
-                    continue;
-                }
+                string problem;
+                var element = ElementRef.Resolve(document, raw, out problem);
 
-                var element = document.GetElement(elementId);
                 if (element == null)
                 {
-                    output.NotFound.Add(raw + "（模型中不存在）");
+                    output.NotFound.Add(raw + "（" + problem + "）");
                     continue;
                 }
 

@@ -68,10 +68,46 @@ namespace RevitMCP.Tooling.Schema
             var schema = BuildType(property.PropertyType, depth, path);
 
             var attribute = property.GetCustomAttribute<McpParamAttribute>();
-            if (attribute != null && !string.IsNullOrEmpty(attribute.Description))
+            if (attribute == null) return schema;
+
+            if (!string.IsNullOrEmpty(attribute.Description))
                 schema.Set("description", attribute.Description);
 
+            ApplyAllowedValues(schema, attribute, property);
+
             return schema;
+        }
+
+        /// <summary>
+        /// 把 <see cref="McpParamAttribute.AllowedValues"/> 落成 JSON Schema 的 <c>enum</c>。
+        ///
+        /// 数组属性的取值约束要挂到 <c>items</c> 上而不是数组本身——
+        /// 挂错地方的 schema 不会报错，只会悄悄失去约束力。
+        /// </summary>
+        private static void ApplyAllowedValues(
+            JsonValue schema, McpParamAttribute attribute, PropertyInfo property)
+        {
+            var allowed = attribute.AllowedValues;
+            if (allowed == null || allowed.Length == 0) return;
+
+            var values = JsonValue.NewArray();
+            foreach (var value in allowed) values.Add(JsonValue.String(value));
+
+            var target = schema;
+
+            var actual = TypeIntrospection.UnwrapNullable(property.PropertyType);
+            if (TypeIntrospection.IsCollection(actual, out _))
+            {
+                var items = schema["items"];
+
+                // items 一定存在（数组分支刚建的）。取不到说明 BuildType 改了结构，
+                // 这时宁可不加约束，也不能把 enum 挂到数组上去
+                if (items == null || !items.IsObject) return;
+
+                target = items;
+            }
+
+            target.Set("enum", values);
         }
 
         private static JsonValue BuildType(Type type, int depth, HashSet<Type> path)

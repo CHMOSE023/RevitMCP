@@ -19,7 +19,13 @@ namespace RevitMCP.Tooling
     public static class ExportPaths
     {
         /// <summary>允许的图片扩展名。白名单而非黑名单——能写 .exe 到磁盘的工具不该存在。</summary>
-        private static readonly string[] AllowedExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" };
+        public static readonly string[] ImageExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" };
+
+        /// <summary>允许的模型与图纸交付格式。</summary>
+        public static readonly string[] DocumentExtensions = { ".dwg", ".dxf", ".ifc", ".nwc", ".pdf" };
+
+        /// <summary>允许的表格格式。明细表导出用。</summary>
+        public static readonly string[] TableExtensions = { ".csv", ".txt", ".tsv" };
 
         /// <summary>
         /// 把调用方给的文件名解析成导出根目录下的绝对路径，顺便建好目录。
@@ -27,6 +33,22 @@ namespace RevitMCP.Tooling
         /// </summary>
         public static string Resolve(string root, string fileName, string defaultExtension)
         {
+            return Resolve(root, fileName, defaultExtension, ImageExtensions);
+        }
+
+        /// <summary>
+        /// 同上，但由调用方指定允许的扩展名。
+        ///
+        /// 白名单跟着导出工具走，而不是全局合并成一份：
+        /// 导图片的工具不该能写出 .dwg，导 DWG 的也不该能写出 .pdf——
+        /// 扩展名与实际内容对不上的文件，下游拿到才会发现。
+        /// </summary>
+        public static string Resolve(
+            string root, string fileName, string defaultExtension, string[] allowedExtensions)
+        {
+            if (allowedExtensions == null || allowedExtensions.Length == 0)
+                throw new ToolFailureException(McpDomainError.InvalidParameter, "未指定允许的扩展名。");
+
             if (string.IsNullOrWhiteSpace(root))
                 throw new ToolFailureException(McpDomainError.InvalidParameter, "导出根目录未配置。");
 
@@ -59,9 +81,10 @@ namespace RevitMCP.Tooling
                 name += extension;
             }
 
-            if (!AllowedExtensions.Contains(extension.ToLowerInvariant()))
+            if (!allowedExtensions.Contains(extension.ToLowerInvariant()))
                 throw new ToolFailureException(McpDomainError.InvalidParameter,
-                    "不支持的文件扩展名 \"" + extension + "\"。可用：" + string.Join("、", AllowedExtensions) + "。");
+                    "不支持的文件扩展名 \"" + extension + "\"。可用：" +
+                    string.Join("、", allowedExtensions) + "。");
 
             string full;
             try
