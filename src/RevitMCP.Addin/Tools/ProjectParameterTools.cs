@@ -79,6 +79,7 @@ namespace RevitMCP.Addin.Tools
     /// 共享参数文件是项目之外的一个文件，交付时漏掉它，别人打开项目会看到参数但对不上。
     /// </summary>
     [McpTool("revit_create_project_parameter",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "创建项目参数",
         Description = "在项目里创建一个参数并绑定到指定类别。" +
                       "**Revit API 只能造共享参数**（非共享的项目参数没有 API 入口），" +
@@ -310,6 +311,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_list_project_parameters",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "列出项目参数",
         Description = "列出项目里已绑定的参数及其数据类型、绑定方式、绑定到哪些类别。" +
                       "带上 includeUnboundShared 还会列出共享参数文件里尚未绑定的定义。" +

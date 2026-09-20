@@ -98,6 +98,7 @@ namespace RevitMCP.Addin.Tools
     /// 类型库是用户的资产，新增什么、叫什么，得是明确的决定而不是副作用。
     /// </summary>
     [McpTool("revit_duplicate_type",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "复制族类型",
         Description = "复制一个已有的族类型，改名并调整参数——对应 Revit「类型属性」里的「复制」按钮。" +
                       "用来生成项目需要但样板里没有的规格，比如从「常规-200mm」复制出「外墙-250」。" +

@@ -98,11 +98,12 @@ namespace RevitMCP.Addin.Tools
     /// 这是调用方自己没法可靠做到的事，所以它属于工具而不属于调用方。
     /// </summary>
     [McpTool("revit_update_sheets",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "修改图纸编号与图签",
         Description = "批量修改图纸的编号、名称与图签参数（审核者、设计者、日期这类）。" +
                       "编号成批互换或循环移位时会自动走两阶段改号，不会因为中途撞号而失败。" +
                       "参数名请先用 revit_get_sheet_contents 查——它们随项目样板和语言变化。" +
-                      "整批要么全成、要么全不动，且在撤销栈里只占一步。",
+                      "整批要么全成、要么全不动。",
         TimeoutSeconds = 120)]
     public sealed class UpdateSheetsTool : RevitTool<UpdateSheetsInput, UpdateSheetsOutput>
     {
@@ -492,6 +493,7 @@ namespace RevitMCP.Addin.Tools
     /// 悄悄降级产出一个少了东西的图纸，比直接失败更难发现。
     /// </summary>
     [McpTool("revit_duplicate_sheets",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "复制图纸",
         Description = "复制一批图纸。新编号必须显式给出且唯一。" +
                       "contents 为 views 时，Revit 会**为图纸上的每个视图生成一份新视图**" +
@@ -898,6 +900,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_get_sheet_contents",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "查看图纸内容",
         Description = "返回图纸上放了哪些视图、用的什么标题栏、挂了哪些修订，" +
                       "以及图纸与标题栏上可写的参数名。" +

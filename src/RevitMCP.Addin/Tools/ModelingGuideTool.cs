@@ -58,13 +58,10 @@ namespace RevitMCP.Addin.Tools
     /// </summary>
     [McpTool("revit_get_modeling_guide",
         Title = "读建模指引",
-        Description = "读这套工具的建模指引：目标文档核验、依赖顺序、代表实例先行、" +
-                      "按实际几何验收、失败恢复、版本限制。" +
-                      "**开始建模任务前先读 overview**——这套工具的失败模式不是调用报错，" +
-                      "而是调用成功、模型不对，而指引里每一条都对应一次真实的翻车。" +
-                      "建完某类构件后读 validation 对应那节；失败或超时后读 recovery；" +
-                      "**准备写绕行代码之前先读 limitations**（很多坑已经修了）。" +
-                      "不需要打开文档，也不改任何东西。",
+        Description = "读这套工具的建模指引。**开始建模任务前先读 overview**——" +
+                      "这套工具的失败模式不是调用报错，而是调用成功、模型不对。" +
+                      "建完某类构件后读 validation；失败或超时后读 recovery；" +
+                      "**写绕行代码之前先读 limitations**（很多坑已经修了）。不需要打开文档。",
         ReadOnly = true,
         TimeoutSeconds = 30)]
     public sealed class GetModelingGuideTool : RevitTool<GetModelingGuideInput, GetModelingGuideOutput>

@@ -39,6 +39,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_read_schedule",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "读取明细表",
         Description = "把一张明细表读成表格数据。明细表是 Revit 里现成的统计结果——" +
                       "门窗表、房间面积表、材料用量表都在这里，比自己遍历构件再算一遍可靠得多。" +

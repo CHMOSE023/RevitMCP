@@ -29,6 +29,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_get_selection",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "读取当前选择集",
         Description = "返回用户此刻在 Revit 里选中的构件。" +
                       "用户说「处理这些」「这几个有问题」时，先调用它把「这些」变成具体的 ID。",
@@ -89,6 +90,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_set_selection",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "设置当前选择集",
         Description = "在 Revit 里把指定构件选中，用户屏幕上会直接高亮显示。" +
                       "查出一批有问题的构件后用它交回给用户，比报一串 ID 让人自己找有用得多。" +

@@ -115,9 +115,10 @@ namespace RevitMCP.Addin.Tools
     /// 差别只在"怎么定出这个视图看哪儿"，而那正是 <c>viewType</c> 这一个参数的职责。
     /// </summary>
     [McpTool("revit_create_views",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "创建视图",
         Description = "批量创建平面、剖面、立面或三维视图。坐标一律用毫米。" +
-                      "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
+                      "整批要么全部建成、要么一个都不建。" +
                       "建好后用 revit_add_views_to_sheet 摆到图纸上。" +
                       "剖面的视线方向：站在 p0 面向 p1，看的是你右手边那一侧。",
         Destructive = false,

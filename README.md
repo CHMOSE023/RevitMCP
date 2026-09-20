@@ -40,7 +40,20 @@
 > 而不是只能在"直接重试"和"当作失败"之间赌一把。
 > 设计见 [docs/design-f09-operation-state.md](docs/design-f09-operation-state.md)。
 >
-> 共 74 个工具：36 个只读 + 38 个写（含 2 个默认关闭的逃生舱）。
+> **M10-G 回执体积**（F10 的服务端那一半）：实测 96 次真实调用，
+> 带缩进的文本块是同内容紧凑 JSON 的 **1.61 倍**——一次调用发出 2.61 份同样的信息。
+> 新增配置 `textBlock`：默认 `compact`（语义零损失，−23.6%），
+> 可选 `omit`（−61.8%，**只有确认客户端读 structuredContent 才能开**）。
+>
+> **M10-H 工具集分组**：75 个工具的 `tools/list` 是每个会话的固定开销（约 65 KB）。
+> 每个工具现在标注了所属集合（core / 建筑 / 结构 / MEP / 出图 / 协同 / 编著 / 逃生舱），
+> 配置 `enabledToolsets` 按需只开用得上的——**实测**只建模省 59.7%、只出图省 46.3%、
+> 建模+出图省 33.2%、纯查询省 72.9%。默认全开，行为不变。
+> `revit_list_toolsets` 让没启用的能力仍然可见（否则调用方会以为服务不会做那件事）。
+> 为什么不按建筑/结构/MEP 切、为什么不做成单入口网关，见
+> [docs/design-toolsets.md](docs/design-toolsets.md)。
+>
+> 共 75 个工具：37 个只读 + 38 个写（含 2 个默认关闭的逃生舱）。
 > 与 `revit-bridge-addin` 的逐条对照见 [docs/bridge-parity.md](docs/bridge-parity.md)。
 
 ---
@@ -128,7 +141,7 @@ workflows/               真实模型上的验收工作流，每个里程碑一�
 
 ## 现有工具
 
-74 个工具：**36 个只读 + 38 个写**（含 2 个默认关闭的逃生舱）。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
+75 个工具：**37 个只读 + 38 个写**（含 2 个默认关闭的逃生舱）。只读工具在「浏览模型」下也能用；写工具需要用户在 Ribbon 上切到「修改模型」。
 
 ### 查看模型
 
@@ -136,6 +149,7 @@ workflows/               真实模型上的验收工作流，每个里程碑一�
 |---|---|
 | `revit_get_modeling_guide` | 读随服务发布的建模指引。**建模前先读 overview**，写绕行代码前先读 limitations |
 | `revit_get_operation_status` | 查一次写调用到底提交没有。**收到 TIMEOUT 先调它，别直接重试** |
+| `revit_list_toolsets` | 工具集分组与启用状态。**清单里找不到某个工具时先查它**——可能只是没启用 |
 | `revit_get_document_info` | 当前文档标题、路径、活动视图、写入模式是否开启 |
 | `revit_list_documents` | 这个 Revit 里打开的所有文档。批量审计从它开始 |
 | `revit_get_project_units` | 项目的长度/面积/体积显示单位，以及它与工具单位是否一致 |

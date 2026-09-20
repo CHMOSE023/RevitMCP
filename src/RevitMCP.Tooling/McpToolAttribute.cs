@@ -49,6 +49,50 @@ namespace RevitMCP.Tooling
 
         /// <summary>单次调用超时。0 表示使用配置中的默认值。</summary>
         public int TimeoutSeconds { get; set; }
+
+        /// <summary>
+        /// 这个工具属于哪些工具集。一个工具可以属于多个——
+        /// 本项目的工具是按**几何范式**组织的（线定位 / 点定位 / 面定位），
+        /// 而专业的边界横切在它们内部：同一个 `create_line_based_elements`
+        /// 既造墙（建筑）也造梁（结构），切不开，只能同时挂在两个集合下。
+        ///
+        /// 省略即 <see cref="Toolsets.Core"/>：常驻、不可关闭。
+        /// 取值见 <see cref="Toolsets"/>。
+        /// </summary>
+        public string[] Toolsets { get; set; }
+    }
+
+    /// <summary>
+    /// 工具集的名字。**以功能为主轴、专业为副轴**——实测（见 docs/design-toolsets.md）：
+    /// 纯按建筑/结构/MEP 切，能摘掉的只有 MEP 与协同两块，上限约 10%；
+    /// 而按功能切，"只出图"的会话能省 35%、"只建模"的能省 27%。
+    /// </summary>
+    public static class Toolsets
+    {
+        /// <summary>常驻，不可关闭：文档与查询、标高轴网、类型与族、参数、几何、警告、保存、删除、指引、操作状态。</summary>
+        public const string Core = "core";
+
+        public const string ModelingArchitecture = "modeling.architecture";
+        public const string ModelingStructure = "modeling.structure";
+        public const string ModelingMep = "modeling.mep";
+
+        /// <summary>视图、图纸、注释标记、明细表、取景、导出。</summary>
+        public const string Documentation = "documentation";
+
+        /// <summary>链接、工作集、阶段、设计选项、碰撞、同步、修订。</summary>
+        public const string Coordination = "coordination";
+
+        /// <summary>材质、类型编辑、项目参数、编组、变换。</summary>
+        public const string Authoring = "authoring";
+
+        /// <summary>两个逃生舱。它们另有 escapeHatchEnabled 这道独立开关。</summary>
+        public const string Escape = "escape";
+
+        public static readonly string[] All =
+        {
+            Core, ModelingArchitecture, ModelingStructure, ModelingMep,
+            Documentation, Coordination, Authoring, Escape
+        };
     }
 
     /// <summary>描述工具 Input DTO 的一个属性，用于生成 JSON Schema。</summary>

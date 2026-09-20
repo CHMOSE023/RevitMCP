@@ -109,12 +109,21 @@ namespace RevitMCP.Tooling
         /// <summary>
         /// 扫描程序集中所有带 [McpTool] 的类型。
         /// <paramref name="disabledTools"/> 里的名字会被跳过（来自 config.json）。
+        /// <paramref name="enabledToolsets"/> 给了就只注册属于这些集合的工具（core 永远算启用）；
+        /// 省略或为空表示全开——默认行为与不分组时完全一致。
+        ///
+        /// **没启用的工具是"不注册"，不是"不列出"。** 只从清单里藏起来却还能调，
+        /// 等于给调用方留一个看不见的陷阱：它在别处看到这个工具名，调用居然成功了，
+        /// 而部署者以为自己关掉了它。
         /// </summary>
-        public int RegisterAssembly(Assembly assembly, IEnumerable<string> disabledTools = null)
+        public int RegisterAssembly(
+            Assembly assembly, IEnumerable<string> disabledTools = null,
+            IEnumerable<string> enabledToolsets = null)
         {
             if (assembly == null) throw new ArgumentNullException(nameof(assembly));
 
             var disabled = new HashSet<string>(disabledTools ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
+            var enabled = ResolveToolsets(enabledToolsets);
             var count = 0;
 
             // 按类型名排序，保证注册顺序与反射返回顺序无关
@@ -127,12 +136,42 @@ namespace RevitMCP.Tooling
             {
                 var metadata = type.GetCustomAttribute<McpToolAttribute>();
                 if (disabled.Contains(metadata.Name)) continue;
+                if (enabled != null && !IsInAnyToolset(metadata, enabled)) continue;
 
                 Register(type, metadata);
                 count++;
             }
 
             return count;
+        }
+
+        /// <summary>这个工具属于哪些集合。没声明就是 core。</summary>
+        public static IReadOnlyList<string> ToolsetsOf(McpToolAttribute metadata)
+        {
+            var declared = metadata?.Toolsets;
+            return declared == null || declared.Length == 0
+                ? new[] { Toolsets.Core }
+                : declared;
+        }
+
+        private static HashSet<string> ResolveToolsets(IEnumerable<string> enabledToolsets)
+        {
+            if (enabledToolsets == null) return null;
+
+            var set = new HashSet<string>(enabledToolsets, StringComparer.OrdinalIgnoreCase);
+            if (set.Count == 0) return null;   // 空 = 没配 = 全开
+
+            // core 不可关闭：关掉它连"有哪些能力"都问不出来了
+            set.Add(Toolsets.Core);
+            return set;
+        }
+
+        private static bool IsInAnyToolset(McpToolAttribute metadata, HashSet<string> enabled)
+        {
+            foreach (var toolset in ToolsetsOf(metadata))
+                if (enabled.Contains(toolset)) return true;
+
+            return false;
         }
 
         public void Register(Type type, McpToolAttribute metadata = null)

@@ -60,6 +60,7 @@ namespace RevitMCP.Addin.Tools
     /// 一律落在配置的导出目录下（见 <see cref="RevitMCP.Tooling.ExportPaths"/>）。
     /// </summary>
     [McpTool("revit_export_image",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "导出视图图片",
         Description = "把视图或图纸导出成图片文件，返回完整路径。" +
                       "截图能落盘、能进报告、能进 PR——比在对话里看一眼就没了有用得多。" +

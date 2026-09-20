@@ -74,13 +74,12 @@ namespace RevitMCP.Addin.Tools
     /// 那是一次波及面很大又不容易察觉的改动，必须显式要求。
     /// </summary>
     [McpTool("revit_load_family",
+        Toolsets = new[] { Toolsets.ModelingArchitecture, Toolsets.ModelingStructure, Toolsets.ModelingMep },
         Title = "载入族",
         Description = "把一个 .rfa 族文件载入当前项目，返回族 ID 与它的全部类型 ID。" +
-                      "**项目样板里没有的族只能靠它**——建模工具只能用已经载入项目的族，" +
-                      "此前缺族时只能请用户去 Revit 界面里手工载入。收的是完整路径。" +
-                      "同名族已存在时默认失败并把已有的那个返回给你；要用文件里的版本替换它，" +
-                      "需要显式 overwrite: true（**会改变项目里所有已放置实例**）。" +
-                      "只要其中几个类型时用 typeNames 挑着载，别把几十个类型全塞进项目。",
+                      "**项目样板里没有的族只能靠它**——建模工具只能用已经载入项目的族。" +
+                      "同名族已存在时默认不覆盖、原样返回已有的那个；要用文件里的版本替换它，" +
+                      "需显式 overwrite: true（**会改变所有已放置实例**）。",
         Destructive = false,
         TimeoutSeconds = 300)]
     public sealed class LoadFamilyTool : RevitTool<LoadFamilyInput, LoadFamilyOutput>

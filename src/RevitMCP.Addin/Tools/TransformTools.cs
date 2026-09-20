@@ -108,9 +108,10 @@ namespace RevitMCP.Addin.Tools
     /// 模型要多记四个名字，而它们的入参、约束、失败模式完全一致。
     /// </summary>
     [McpTool("revit_transform_elements",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "平移/复制/旋转/镜像构件",
         Description = "对一批构件做平移、复制、旋转或镜像。坐标与距离一律用毫米，角度用度。" +
-                      "整批要么全部成功、要么全部不动，且在撤销栈里只占一步。" +
+                      "整批要么全部成功、要么全部不动。" +
                       "被钉住（pinned）的构件不能移动——先用 revit_set_elements_pinned 解钉。" +
                       "依附于宿主的构件（门窗）会跟着宿主走，单独移动它们通常会被 Revit 拒绝。",
         TimeoutSeconds = 120)]

@@ -53,9 +53,10 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_create_line_based_elements",
+        Toolsets = new[] { Toolsets.ModelingArchitecture, Toolsets.ModelingStructure },
         Title = "创建线定位构件",
         Description = "按定位线批量创建墙或梁。坐标和尺寸一律用毫米，原点与项目坐标系一致。" +
-                      "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步——" +
+                      "整批要么全部建成、要么一个都不建——" +
                       "建一圈墙请一次调用传完，不要逐面调用。" +
                       "墙的高度**优先用 topLevelId 顶到标高**，而不是写死 height：前者会随层高联动。" +
                       "外皮尺寸直接照图给，配 locationLineRef: \"FinishFaceExterior\" 即可，" +

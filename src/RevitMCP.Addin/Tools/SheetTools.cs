@@ -62,8 +62,9 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_create_sheets",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "创建图纸",
-        Description = "批量创建图纸。整批要么全部建成、要么一张都不建，且在撤销栈里只占一步。" +
+        Description = "批量创建图纸。整批要么全部建成、要么一张都不建。" +
                       "编号在项目内必须唯一，重复会被 Revit 拒绝——建之前可以先用 " +
                       "revit_list_views 查 DrawingSheet 看看已有哪些编号。" +
                       "建好后用 revit_add_views_to_sheet 往上摆视图。",
@@ -292,6 +293,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_add_views_to_sheet",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "把视图放到图纸上",
         Description = "把一批视图放到指定图纸上。整批要么全放成、要么一个都不放。" +
                       "**一个视图只能放在一张图纸上**——已经放过的会被拒绝，" +

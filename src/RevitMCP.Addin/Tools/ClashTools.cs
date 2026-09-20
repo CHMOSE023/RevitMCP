@@ -103,6 +103,7 @@ namespace RevitMCP.Addin.Tools
     /// 那是个规则库的问题，不是一个工具参数能表达的。
     /// </summary>
     [McpTool("revit_check_clashes",
+        Toolsets = new[] { Toolsets.Coordination },
         Title = "碰撞检查",
         Description = "在两组构件之间做硬碰撞检查（实体几何真的相交，不是包围盒重叠）。" +
                       "省略 setB 则在 setA 内部两两互检。" +
@@ -470,6 +471,7 @@ namespace RevitMCP.Addin.Tools
     /// 测量点对不上，两个模型在别人的软件里会差出几十米。
     /// </summary>
     [McpTool("revit_get_project_location",
+        Toolsets = new[] { Toolsets.Coordination },
         Title = "查看项目位置",
         Description = "返回项目的地理位置（经纬度、时区）与测量点相对项目基点的偏移、正北角。" +
                       "导出 IFC/NWC 交给别的专业之前值得核对一遍——" +

@@ -52,9 +52,10 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_create_surface_based_elements",
+        Toolsets = new[] { Toolsets.ModelingArchitecture, Toolsets.ModelingStructure },
         Title = "创建面定位构件",
         Description = "按闭合边界批量创建楼板、屋顶或天花。坐标一律用毫米。" +
-                      "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
+                      "整批要么全部建成、要么一个都不建。" +
                       "边界必须首尾相接形成闭合环；不闭合会被直接拒绝，并告诉你断在哪一段。" +
                       "**要留洞（梯井、管井、天井）就用 boundary.innerLoops**，" +
                       "不要把一块板拆成几块去绕开——那样会留下一串「楼板重叠」警告。",

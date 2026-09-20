@@ -118,12 +118,13 @@ namespace RevitMCP.Addin.Tools
     /// 两根管的端点重合时 Revit 通常会自动连上，但那是 Revit 的行为而非本工具的承诺。
     /// </summary>
     [McpTool("revit_create_mep_curves",
+        Toolsets = new[] { Toolsets.ModelingMep },
         Title = "创建风管/水管/线管/桥架",
         Description = "按定位线批量创建 MEP 管线。坐标与尺寸一律用毫米。" +
                       "建的是**单根直管**，不自动生成弯头与三通——" +
                       "端点重合时 Revit 可能自己连上，但那不是本工具的承诺。" +
                       "风管与水管必须归属一个系统类型，省略则用项目里的第一个（会通过 warnings 告知）。" +
-                      "整批要么全成、要么一根都不建，且在撤销栈里只占一步。",
+                      "整批要么全成、要么一根都不建。",
         Destructive = false,
         TimeoutSeconds = 180)]
     public sealed class CreateMepCurvesTool : RevitTool<CreateMepCurvesInput, CreateMepCurvesOutput>
@@ -550,6 +551,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_list_mep_systems",
+        Toolsets = new[] { Toolsets.ModelingMep },
         Title = "列出 MEP 系统",
         Description = "列出模型里的 MEP 系统实例，或（types: true 时）可用的系统类型。" +
                       "**建管线前用 types: true 查 systemTypeId**——" +

@@ -74,13 +74,11 @@ namespace RevitMCP.Addin.Tools
     /// </summary>
     [McpTool("revit_get_operation_status",
         Title = "查操作状态",
-        Description = "按 operationId 或 requestKey 查一次写调用的状态：" +
-                      "已提交（改动在模型里）、已回滚（模型原样）、还是结果不确定。" +
-                      "**收到 TIMEOUT 之后先调它，不要直接重试**——" +
+        Description = "按 operationId 或 requestKey 查一次写调用到底提交了没有。" +
+                      "**收到 TIMEOUT 后先调它，不要直接重试**——" +
                       "在 Revit 里重复创建最难发现：不报错、不产生警告。" +
-                      "回执里的 nextStep 直接说明接下来该做什么。" +
-                      "注意日志只保留最近 200 次调用或 24 小时，且进程重启后清空：" +
-                      "查不到会返回 unknown 并告诉你怎么去模型里核实。",
+                      "回执的 nextStep 说明接下来该做什么；查不到会返回 unknown，" +
+                      "那不等于「没发生过」。",
         ReadOnly = true,
         TimeoutSeconds = 30)]
     public sealed class GetOperationStatusTool : RevitTool<GetOperationStatusInput, OperationStatusOutput>

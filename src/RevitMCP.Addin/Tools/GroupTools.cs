@@ -59,10 +59,11 @@ namespace RevitMCP.Addin.Tools
     /// 也是 <c>revit_transform_elements</c> 最常见的失败原因。
     /// </summary>
     [McpTool("revit_set_elements_pinned",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "钉住/解钉构件",
         Description = "把一批构件钉住或解钉。钉住的构件在 Revit 里不能被移动、旋转或删除。" +
                       "轴网和标高通常是钉住的，移动它们之前要先解钉。" +
-                      "整批要么全成、要么全不动，且在撤销栈里只占一步。",
+                      "整批要么全成、要么全不动。",
         Destructive = false,
         TimeoutSeconds = 60)]
     public sealed class SetPinnedTool : RevitTool<SetPinnedInput, SetPinnedOutput>
@@ -186,10 +187,11 @@ namespace RevitMCP.Addin.Tools
     /// 所以 ungroup 不视为破坏性操作，而 create 之后要提醒模型这层联动存在。
     /// </summary>
     [McpTool("revit_group_elements",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "打组/打散",
         Description = "把一批构件打成组，或把组打散。组是 Revit 的复用单元：" +
                       "同一组类型的多个实例会联动——改其中一个，其他的跟着变。" +
-                      "整批要么全成、要么全不动，且在撤销栈里只占一步。",
+                      "整批要么全成、要么全不动。",
         Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class GroupElementsTool : RevitTool<GroupElementsInput, GroupElementsOutput>
@@ -408,6 +410,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_list_groups",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "列出组",
         Description = "列出模型中的组实例及其名称、成员数、同类型实例数。" +
                       "instanceCount 大于 1 表示改这一个组会联动改到其他几个——" +

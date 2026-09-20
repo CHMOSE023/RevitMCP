@@ -79,6 +79,7 @@ namespace RevitMCP.Addin.Tools
     /// 做成写工具则受写保护管辖、在撤销栈里占一步、用户能一步撤回。
     /// </summary>
     [McpTool("revit_set_view_extent",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "调整视图取景范围",
         Description = "把视图的裁剪范围（三维再加剖切框）收到指定构件或全部可见构件上，" +
                       "**出图前用它**——未收过的视图里标高线会延伸很远，" +

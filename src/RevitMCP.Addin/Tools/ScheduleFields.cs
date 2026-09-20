@@ -58,6 +58,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_list_schedulable_fields",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "列出明细表可用字段",
         Description = "列出某个类别做明细表时能选哪些字段。" +
                       "建明细表之前先用它——字段名是 Revit 按项目语言给的（中文项目里就是中文），" +
@@ -146,6 +147,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_create_schedule",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "创建明细表",
         Description = "按类别创建明细表（门窗表、房间面积表这类）。" +
                       "字段名先用 revit_list_schedulable_fields 查，别猜。" +

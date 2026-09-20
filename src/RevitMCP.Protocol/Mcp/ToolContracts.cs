@@ -100,8 +100,13 @@ namespace RevitMCP.Protocol.Mcp
 
         public JsonValue ToJson(McpRequestContext context)
         {
-            var content = JsonValue.NewArray()
-                .Add(JsonValue.NewObject().Set("type", "text").Set("text", Text));
+            var content = JsonValue.NewArray();
+
+            // 文本为空且有结构化输出时，连那个空文本块都不放——
+            // 服务端被显式配成"只给 structuredContent"时才会走到这里，
+            // 放一个空字符串块只会让客户端渲染出一片空白，看起来像工具什么都没返回
+            if (Text.Length > 0 || StructuredContent == null)
+                content.Add(JsonValue.NewObject().Set("type", "text").Set("text", Text));
 
             var result = context.NewResult().Set("content", content);
             if (StructuredContent != null) result.Set("structuredContent", StructuredContent);

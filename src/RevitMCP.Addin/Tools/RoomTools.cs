@@ -425,9 +425,10 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_create_rooms",
+        Toolsets = new[] { Toolsets.ModelingArchitecture },
         Title = "创建房间",
         Description = "在指定点上批量创建房间。坐标用毫米，点必须落在被墙围合的区域里。" +
-                      "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
+                      "整批要么全部建成、要么一个都不建。" +
                       "回执里的 areaSqm 是关键：**它为 0 说明那个点周围的墙没有围成闭合区域**，" +
                       "房间虽然建出来了却没有面积。建完请核对这个字段，别只看有没有报错。",
         Destructive = false,

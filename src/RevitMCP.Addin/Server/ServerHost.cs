@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -208,8 +209,13 @@ namespace RevitMCP.Addin.Server
         private ToolPipeline<UIApplication> BuildToolPipeline()
         {
             var registry = new ToolRegistry<UIApplication>();
-            var count = registry.RegisterAssembly(typeof(ServerHost).Assembly, _config.DisabledTools);
+            var count = registry.RegisterAssembly(
+                typeof(ServerHost).Assembly, _config.DisabledTools, _config.EnabledToolsets);
             var journal = new OperationJournal();
+
+            // 工具集清单要连"没启用的"一起报——否则调用方会以为那些能力不存在，
+            // 而不是"在那儿、只是没开"
+            ListToolsetsTool.Source = () => DescribeToolsets(registry);
 
             // 状态查询工具拿不到管线实例，日志从这里递给它
             GetOperationStatusTool.Journal = journal;
@@ -220,6 +226,7 @@ namespace RevitMCP.Addin.Server
                 WriteEnabled = () => _config.WriteEnabled,
                 MaxElementsPerWrite = () => _config.MaxElementsPerWrite,
                 DefaultTimeoutSeconds = () => _config.DefaultToolTimeoutSeconds,
+                TextBlock = () => ParseTextBlock(_config.TextBlock),
                 Log = LogFrom,
                 Audit = entry => Log.Audit(entry.ToString())
             },
@@ -271,16 +278,65 @@ namespace RevitMCP.Addin.Server
         }
 
         /// <summary>
-        /// 给客户端的开场白。**第一句就指向建模指引**——
-        /// 这是唯一一处"客户端一连上就会看到"的文字，
-        /// 把它用来说"有一份指引、在哪读"，比说任何别的都划算。
+        /// 扫一遍程序集里所有带 [McpTool] 的类型，报告它们属于哪些集合、当前有没有注册。
+        /// **必须扫全集**而不是只看注册表——没启用的那些正是调用方最需要知道存在的。
         /// </summary>
-        private string BuildInstructions() =>
+        private static IReadOnlyList<ToolsetMembership> DescribeToolsets(ToolRegistry<UIApplication> registry)
+        {
+            var result = new List<ToolsetMembership>();
+
+            foreach (var type in typeof(ServerHost).Assembly.GetTypes())
+            {
+                if (!type.IsClass || type.IsAbstract) continue;
+
+                var metadata = type.GetCustomAttribute<McpToolAttribute>();
+                if (metadata == null) continue;
+
+                RegisteredTool<UIApplication> registered;
+                result.Add(new ToolsetMembership(
+                    metadata.Name,
+                    ToolRegistry<UIApplication>.ToolsetsOf(metadata),
+                    registry.TryGet(metadata.Name, out registered)));
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// 配置里的 textBlock 值 → 管线的模式。认不出来就退回默认，
+        /// 不因为一个拼错的配置项让每次调用都变形。
+        /// </summary>
+        private static TextBlockMode ParseTextBlock(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return TextBlockMode.Compact;
+
+            switch (value.Trim().ToLowerInvariant())
+            {
+                case "full": return TextBlockMode.Full;
+                case "omit": return TextBlockMode.Omit;
+                default: return TextBlockMode.Compact;
+            }
+        }
+
+        /// <summary>
+        /// 给客户端的开场白。**唯一一处"客户端一连上就会看到"的文字**，
+        /// 所以整段只干一件事：告诉调用方有一份随服务发布的建模指引，
+        /// 以及什么时候该读哪一节。
+        ///
+        /// 路由那一行不能省。只说"建模前先读 overview"，
+        /// 调用方失败时不会想到这里还有 recovery、
+        /// 要绕开某个限制时不会想到 limitations 里写着"这坑已经修了"——
+        /// 而那几个时刻恰恰是最需要指引的时刻。
+        ///
+        /// 反过来，这段每次会话都占上下文，一个字的背景介绍都不该有。
+        /// </summary>
+        internal static string BuildInstructions() =>
             "操作当前在 Revit " + RevitVersionInfo.Year + " 中打开的模型。" +
-            "**建模前先调用 revit_get_modeling_guide 读一遍建模指引**" +
-            "（同一份内容也发布为 MCP 资源 " + ModelingGuide.UriPrefix + "*）：" +
-            "这套工具的失败模式不是调用报错，而是调用成功、模型不对，" +
-            "指引里每一条都对应一次真实的翻车。" +
+            "**本服务自带一份建模指引**：调用 revit_get_modeling_guide 读，" +
+            "或按 MCP 资源 " + ModelingGuide.UriPrefix + "* 读（同一份内容）。" +
+            "建模前读 overview，排计划读 sequence，建完一类构件读 validation，" +
+            "调用失败或超时读 recovery，写绕行代码前读 limitations。" +
+            "**不读很容易踩空**：这套工具的失败模式不是调用报错，而是调用成功、模型不对。" +
             "写操作默认被禁用，需用户在 Revit 的 RevitMCP 面板上手动开启。";
 
         private static void LogFrom(string message, Exception ex)

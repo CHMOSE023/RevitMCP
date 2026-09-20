@@ -18,6 +18,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 建模指引与开场白是 internal 的（不属于对外 API），但必须有测试守着 -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>RevitMCP.Addin.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Ribbon 图标用 WPF 在运行时绘制，不引入二进制资源文件 -->
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />

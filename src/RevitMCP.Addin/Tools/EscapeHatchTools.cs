@@ -80,6 +80,7 @@ namespace RevitMCP.Addin.Tools
     /// 开启"允许任意代码在 Revit 进程里跑"应当是一个需要停下来想一想的动作。
     /// </summary>
     [McpTool("revit_invoke_api",
+        Toolsets = new[] { Toolsets.Escape },
         Title = "直接调用 Revit API（逃生舱）",
         Description = "用反射调用任意 Revit API 方法、读写任意属性。" +
                       "**这是逃生舱，不是常规工具**：没有单位换算（长度按 Revit 内部单位英尺）、" +
@@ -361,6 +362,7 @@ namespace RevitMCP.Addin.Tools
     /// 这个适合需要循环、条件、临时变量的一小段逻辑。
     /// </summary>
     [McpTool("revit_execute_script",
+        Toolsets = new[] { Toolsets.Escape },
         Title = "执行 C# 脚本（逃生舱）",
         Description = "在 Revit 进程里编译并执行一段 C# 代码，可以直接用 doc、uidoc、uiapp。" +
                       "**这是逃生舱，不是常规工具**：没有单位换算（长度用 Revit 内部单位英尺）、" +

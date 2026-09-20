@@ -64,11 +64,12 @@ namespace RevitMCP.Addin.Tools
     /// 一句指向死路的提示，比没有提示更费时间。
     /// </summary>
     [McpTool("revit_list_view_family_types",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "列出视图族类型",
-        Description = "列出项目里的视图族类型及其 ID——revit_create_views 的 viewFamilyTypeId 从这里来。" +
-                      "项目里常有多套同类视图族类型（「建筑平面」「结构平面」「详图剖面」等），" +
-                      "省略 viewFamilyTypeId 时工具只挑第一个，挑得对不对看 isDefaultPick。" +
-                      "**视图族类型不是构件类别**，用 revit_list_types 查 OST_Views 是查不到的。",
+        Description = "列出视图族类型及其 ID——revit_create_views 的 viewFamilyTypeId 从这里来。" +
+                      "项目里常有多套同类类型（「建筑平面」「结构平面」），省略时只挑第一个，" +
+                      "挑得对不对看 isDefaultPick。" +
+                      "**它不是构件类别**，用 revit_list_types 查 OST_Views 查不到。",
         ReadOnly = true,
         TimeoutSeconds = 60)]
     public sealed class ListViewFamilyTypesTool : RevitTool<ListViewFamilyTypesInput, ListViewFamilyTypesOutput>

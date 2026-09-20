@@ -56,7 +56,7 @@ namespace RevitMCP.Addin.Tools
                       "删一面墙，墙上的门窗一起没。" +
                       "第一次调用不带 confirm，工具会先告诉你实际会删掉哪些（包括连带的），" +
                       "核对后带 confirm: true 再调用一次才真的执行。" +
-                      "整批要么全删、要么都不删，在撤销栈里只占一步。",
+                      "整批要么全删、要么都不删。",
         TimeoutSeconds = 120)]
     public sealed class DeleteElementsTool : RevitTool<DeleteElementsInput, DeleteElementsOutput>
     {

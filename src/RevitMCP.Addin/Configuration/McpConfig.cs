@@ -44,9 +44,35 @@ namespace RevitMCP.Addin.Configuration
         /// </summary>
         public bool AutoConfirmUnknownDialogs { get; set; } = false;
 
+        /// <summary>
+        /// 成功回执里那份文本块怎么给：compact（默认）、full、omit。
+        ///
+        /// 规范建议在 structuredContent 之外再放一份文本，供不认识结构化输出的客户端使用——
+        /// 于是同一份数据发两遍。实测 96 次真实调用：带缩进的文本是同内容紧凑 JSON 的 **1.61 倍**，
+        /// 一次调用实际发出 2.61 份信息量。
+        ///
+        /// · compact：内容不变，只是不缩进，省掉约 38% 的文本字符。
+        /// · full：老行为，带缩进。人要直接读原始响应时才需要。
+        /// · omit：完全不给文本块。**只有确认你的客户端读 structuredContent 才能开**——
+        ///   只看文本的客户端会看到空结果，而那种失败看起来像"工具什么都没返回"。
+        /// </summary>
+        public string TextBlock { get; set; } = "compact";
+
         public int MaxElementsPerWrite { get; set; } = 500;
         public int DefaultToolTimeoutSeconds { get; set; } = 60;
         public List<string> DisabledTools { get; set; } = new List<string>();
+
+        /// <summary>
+        /// 只启用这几个工具集（core 永远启用）。**空数组 = 全开**，与不分组时完全一致。
+        ///
+        /// 74 个工具的 tools/list 是每个会话的固定开销（实测约 65 KB）。
+        /// 按需只开用得上的：只出图的会话能省 35%，只建模的能省 27%。
+        /// 可选值见 <c>revit_list_toolsets</c> 或 docs/design-toolsets.md。
+        ///
+        /// 没启用的工具是**不注册**——既不在 tools/list 里，调用也返回"工具不存在"。
+        /// 只藏不禁等于给调用方留一个看不见的陷阱。
+        /// </summary>
+        public List<string> EnabledToolsets { get; set; } = new List<string>();
         public List<string> AllowedOrigins { get; set; } = new List<string>
         {
             "http://localhost", "http://127.0.0.1", "https://claude.ai"
@@ -95,9 +121,11 @@ namespace RevitMCP.Addin.Configuration
                 config.WriteEnabled = ReadBool(root, "writeEnabled", config.WriteEnabled);
                 config.EscapeHatchEnabled = ReadBool(root, "escapeHatchEnabled", config.EscapeHatchEnabled);
                 config.AutoConfirmUnknownDialogs = ReadBool(root, "autoConfirmUnknownDialogs", config.AutoConfirmUnknownDialogs);
+                config.TextBlock = ReadString(root, "textBlock", config.TextBlock);
                 config.MaxElementsPerWrite = ReadInt(root, "maxElementsPerWrite", config.MaxElementsPerWrite);
                 config.DefaultToolTimeoutSeconds = ReadInt(root, "defaultToolTimeoutSeconds", config.DefaultToolTimeoutSeconds);
                 config.DisabledTools = ReadStringList(root, "disabledTools", config.DisabledTools);
+                config.EnabledToolsets = ReadStringList(root, "enabledToolsets", config.EnabledToolsets);
                 config.AllowedOrigins = ReadStringList(root, "allowedOrigins", config.AllowedOrigins);
                 config.LogLevel = ReadEnum(root, "logLevel", config.LogLevel);
                 config.ExportDirectory = ReadString(root, "exportDirectory", null);
@@ -133,9 +161,11 @@ namespace RevitMCP.Addin.Configuration
                 .Set("writeEnabled", WriteEnabled)
                 .Set("escapeHatchEnabled", EscapeHatchEnabled)
                 .Set("autoConfirmUnknownDialogs", AutoConfirmUnknownDialogs)
+                .Set("textBlock", TextBlock ?? "compact")
                 .Set("maxElementsPerWrite", MaxElementsPerWrite)
                 .Set("defaultToolTimeoutSeconds", DefaultToolTimeoutSeconds)
                 .Set("disabledTools", ToArray(DisabledTools))
+                .Set("enabledToolsets", ToArray(EnabledToolsets))
                 .Set("allowedOrigins", ToArray(AllowedOrigins))
                 .Set("logLevel", LogLevel.ToString())
                 .Set("exportDirectory", ExportDirectory ?? string.Empty);

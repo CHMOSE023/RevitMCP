@@ -70,6 +70,7 @@ namespace RevitMCP.Addin.Tools
     /// 所以这个工具把每个工作集的开关状态明说，让调用方能先确认范围是不是完整的。
     /// </summary>
     [McpTool("revit_list_worksets",
+        Toolsets = new[] { Toolsets.Coordination },
         Title = "列出工作集",
         Description = "列出工作共享模型的工作集及其开关状态、编辑权归属、构件数。" +
                       "**做全模型审计前值得先调它**：关闭的工作集里的构件查询看不到，" +
@@ -248,6 +249,7 @@ namespace RevitMCP.Addin.Tools
     /// 其他写工具的规模闸问的是"你确定范围对吗"，这里问的是"你确定要发布吗"。
     /// </summary>
     [McpTool("revit_sync_to_central",
+        Toolsets = new[] { Toolsets.Coordination },
         Title = "同步到中心文件",
         Description = "把本地改动同步到中心文件，或放弃占用的编辑权。" +
                       "**同步会把改动推给所有协作者，且无法撤销**——" +
@@ -428,6 +430,7 @@ namespace RevitMCP.Addin.Tools
     /// 在结构专业是链接进来的项目上会彻底跑偏。
     /// </summary>
     [McpTool("revit_list_links",
+        Toolsets = new[] { Toolsets.Coordination },
         Title = "列出链接模型",
         Description = "列出项目里链接的 Revit 模型（可选带上 CAD 链接）及其载入状态、实例数。" +
                       "**链接模型里的构件不属于当前文档，普通查询查不到**——" +
@@ -619,6 +622,7 @@ namespace RevitMCP.Addin.Tools
     /// 这个工具是把那种错误变得可见的第一步。
     /// </summary>
     [McpTool("revit_list_phases",
+        Toolsets = new[] { Toolsets.Coordination },
         Title = "列出阶段",
         Description = "列出项目的阶段序列与阶段过滤器，并给出每个阶段创建/拆除了多少构件。" +
                       "**改造类项目做统计前必须先看它**：同一位置的「现有」与「新建」是两个构件，" +
@@ -760,6 +764,7 @@ namespace RevitMCP.Addin.Tools
     /// 不加区分地统计会把所有方案一起数进去。
     /// </summary>
     [McpTool("revit_list_design_options",
+        Toolsets = new[] { Toolsets.Coordination },
         Title = "列出设计选项",
         Description = "列出项目里的设计选项集与各个选项，以及每个选项里有多少构件。" +
                       "**多方案模型做统计前必须先看它**：几套方案的构件会被一起数进去。" +

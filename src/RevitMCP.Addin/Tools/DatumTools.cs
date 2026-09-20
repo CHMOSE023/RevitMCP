@@ -104,7 +104,7 @@ namespace RevitMCP.Addin.Tools
                       "**创建标高时默认同时建一个楼层平面视图**——" +
                       "Revit 的 Level.Create 本身不建视图，只建标高的话用户在项目浏览器里找不到它。" +
                       "轴网默认是直线；给了 arcPoint 就是过三点的圆弧轴。" +
-                      "整批要么全成、要么一个都不建，且在撤销栈里只占一步。",
+                      "整批要么全部建成、要么一个都不建。",
         Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class CreateDatumsTool : RevitTool<CreateDatumsInput, CreateDatumsOutput>

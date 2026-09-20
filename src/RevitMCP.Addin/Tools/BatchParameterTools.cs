@@ -127,7 +127,7 @@ namespace RevitMCP.Addin.Tools
                       "**按条件改**是它的主要用途：「把所有外墙的防火等级设为 A」直接给 filter，" +
                       "不用先查一遍 ID 再传回来。" +
                       "只改一个参数的简单情形用 revit_set_element_parameters 更省事。" +
-                      "整批要么全成、要么全不动，且在撤销栈里只占一步。",
+                      "整批要么全成、要么全不动。",
         TimeoutSeconds = 300)]
     public sealed class BatchSetParametersTool
         : RevitTool<BatchSetParametersInput, BatchSetParametersOutput>

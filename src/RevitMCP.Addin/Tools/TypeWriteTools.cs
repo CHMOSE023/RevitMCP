@@ -66,11 +66,12 @@ namespace RevitMCP.Addin.Tools
     /// 而让模型先查一遍 ID 再传回来，中间任何一次遗漏都会变成漏改。
     /// </summary>
     [McpTool("revit_change_element_types",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "换构件类型",
         Description = "把一批构件换成另一个类型。可以按构件 ID 指定，也可以给 fromTypeId " +
                       "把用了某个类型的实例统统换掉。新旧类型必须属于同一类别。" +
                       "换型会重算几何——墙变厚会挤到相邻构件，改完值得用 revit_get_warnings 看一眼。" +
-                      "整批要么全成、要么全不动，且在撤销栈里只占一步。",
+                      "整批要么全成、要么全不动。",
         TimeoutSeconds = 120)]
     public sealed class ChangeTypeTool : RevitTool<ChangeTypeInput, ChangeTypeOutput>
     {
@@ -291,6 +292,7 @@ namespace RevitMCP.Addin.Tools
     /// 回执里的 affectedInstances 则把实际影响面摊开说。
     /// </summary>
     [McpTool("revit_set_type_parameters",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "批量改类型参数",
         Description = "把一批族类型的同一个参数设成同一个值。" +
                       "注意：改类型参数会同时改变模型中用了这个类型的每一个构件——" +

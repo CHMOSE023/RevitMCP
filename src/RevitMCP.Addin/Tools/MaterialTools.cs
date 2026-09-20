@@ -79,6 +79,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_list_materials",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "列出材质",
         Description = "列出项目里的材质及其 ID、类别、颜色。" +
                       "**给构件设材质用的就是这里的 ID**：拿到 ID 后调 revit_set_element_parameters，" +
@@ -280,12 +281,13 @@ namespace RevitMCP.Addin.Tools
     /// 渲染和算量都用不上，而这一点在模型里完全看不出来。
     /// </summary>
     [McpTool("revit_create_materials",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "创建材质",
         Description = "批量创建材质。**尽量给 copyFromId 从已有材质复制**：" +
                       "空白新建的材质没有物理属性与外观资源，渲染和算量都用不上它，" +
                       "而这一点在模型里完全看不出来。" +
                       "材质会永久留在项目里，不要为了一次性需求随手创建。" +
-                      "整批要么全成、要么一个都不建，且在撤销栈里只占一步。",
+                      "整批要么全部建成、要么一个都不建。",
         Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class CreateMaterialsTool : RevitTool<CreateMaterialsInput, CreateMaterialsOutput>
@@ -519,6 +521,7 @@ namespace RevitMCP.Addin.Tools
     /// 不是这个工具另外估出来的。
     /// </summary>
     [McpTool("revit_calculate_material_quantities",
+        Toolsets = new[] { Toolsets.Authoring },
         Title = "统计材质用量",
         Description = "按材质汇总体积（立方米）与面积（平方米）。" +
                       "数字来自 Revit 自己的材质算量，与明细表里的「材质：体积」一致。" +

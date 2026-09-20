@@ -123,6 +123,7 @@ namespace RevitMCP.Addin.Tools
     /// 在四处重复表达一遍，而它们各自的差异其实只有"定位靠什么"这一条。
     /// </summary>
     [McpTool("revit_create_annotations",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "创建注释",
         Description = "批量创建文字、标记、尺寸标注或修订云线。坐标一律用毫米。" +
                       "注释是**视图专属**的：只在 viewId 指定的那个视图里看得到，" +
@@ -131,7 +132,7 @@ namespace RevitMCP.Addin.Tools
                       "**尺寸标注建完一定要核对回执里的 value**：" +
                       "Revit 会接受方向不合理的组合（比如拿水平尺寸线去量两道相互垂直的轴网），" +
                       "不报错，但给出的读数毫无意义——量两道竖向轴网的间距，尺寸线要是水平的。" +
-                      "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。",
+                      "整批要么全部建成、要么一个都不建。",
         Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class CreateAnnotationsTool : RevitTool<CreateAnnotationsInput, CreateAnnotationsOutput>
@@ -450,11 +451,12 @@ namespace RevitMCP.Addin.Tools
     /// 出图阶段最省事的一步，也是最容易一次生成几百个图元的一步，所以要过规模闸。
     /// </summary>
     [McpTool("revit_tag_all_in_view",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "在视图中批量标记",
         Description = "把指定视图里某个类别的构件全部打上标记，对应 Revit 的「按类别全部标记」。" +
                       "默认跳过已经有标记的构件。" +
                       "需要项目里已载入对应类别的标记族——没载入会整批失败并说明原因。" +
-                      "整批要么全成、要么一个都不建，且在撤销栈里只占一步。",
+                      "整批要么全部建成、要么一个都不建。",
         Destructive = false,
         TimeoutSeconds = 180)]
     public sealed class TagAllInViewTool : RevitTool<TagAllInput, TagAllOutput>
@@ -601,6 +603,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_list_revisions",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "列出修订",
         Description = "列出项目里的修订序列及其编号、日期、说明、发布状态。" +
                       "创建修订云线需要先有一个修订——ID 从这里取。" +

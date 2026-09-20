@@ -52,6 +52,7 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_list_view_templates",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "列出视图样板",
         Description = "列出项目里的视图样板及其适用的视图类型。" +
                       "样板只能套到同类型的视图上——平面的样板套不到剖面。" +
@@ -218,6 +219,7 @@ namespace RevitMCP.Addin.Tools
     /// 也是"我明明改了视图设置却没生效"最常见的原因。
     /// </summary>
     [McpTool("revit_apply_view_template",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "套用视图样板",
         Description = "给一批视图套上视图样板，或取消套用（templateId 传空）。" +
                       "套上之后，样板管辖的那些设置在视图里会变成只读——" +

@@ -67,9 +67,10 @@ namespace RevitMCP.Addin.Tools
     }
 
     [McpTool("revit_create_point_based_elements",
+        Toolsets = new[] { Toolsets.ModelingArchitecture, Toolsets.ModelingStructure },
         Title = "创建点定位构件",
         Description = "按插入点批量创建门、窗、家具、柱等点定位构件。坐标一律用毫米。" +
-                      "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
+                      "整批要么全部建成、要么一个都不建。" +
                       "门窗必须依附于墙：给 hostWallId，或把插入点放在墙上让工具自己找。" +
                       "**柱请配 topLevelId 顶到标高**，而不是靠类型自带的高度。" +
                       "建之前先用 revit_list_types 确认对应的族已载入本项目——没载入的族无法创建。",

@@ -82,6 +82,7 @@ namespace RevitMCP.Addin.Tools
     /// 而那恰恰是最容易在几处之间走样的地方。
     /// </summary>
     [McpTool("revit_export_documents",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "导出 DWG/DXF/PDF/IFC/NWC",
         Description = "把视图、图纸或整个模型导成交付格式。" +
                       "dwg、dxf、pdf 按视图导（需要 viewIds）；ifc、nwc 导整个模型。" +
@@ -476,6 +477,7 @@ namespace RevitMCP.Addin.Tools
     /// 适合"看一眼、做个判断"；这个落盘成文件，适合交给别的软件或存档。
     /// </summary>
     [McpTool("revit_export_schedules",
+        Toolsets = new[] { Toolsets.Documentation },
         Title = "导出明细表",
         Description = "把一批明细表导成 CSV/TSV/TXT 文件，落在服务的导出目录下。" +
                       "只是想读数据做判断的话用 revit_read_schedule——" +
