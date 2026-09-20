@@ -12,7 +12,9 @@ namespace RevitMCP.Addin.Tools
 {
     public sealed class PointBasedElementSpec
     {
-        [McpParam("BuiltInCategory 名，如 OST_Doors、OST_Windows、OST_Furniture、OST_GenericModel", Required = true)]
+        [McpParam("BuiltInCategory 名。门窗家具用 OST_Doors、OST_Windows、OST_Furniture、OST_GenericModel；" +
+                  "柱用 OST_StructuralColumns（结构柱）或 OST_Columns（建筑柱）——" +
+                  "结构柱会按结构构件创建，配 topLevelId 顶到标高", Required = true)]
         public string Category { get; set; }
 
         [McpParam("族类型 ID，来自 revit_list_types。省略则用该类别的默认类型。" +
@@ -34,6 +36,13 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("宿主墙 ID。门窗必须依附于墙；省略时自动找离插入点最近的墙")]
         public string HostWallId { get; set; }
+
+        [McpParam("顶部标高 ID。**仅柱可用**：柱顶到那条标高并随它联动，层高改了柱子跟着变。" +
+                  "门窗家具的竖向位置用 baseOffset")]
+        public string TopLevelId { get; set; }
+
+        [McpParam("相对顶部标高的偏移，毫米，默认 0。可为负（收到梁底）。仅在给了 topLevelId 时有效")]
+        public double? TopOffset { get; set; }
 
         [McpParam("翻转朝向（门窗的内外方向），默认 false")]
         public bool? FacingFlipped { get; set; }
@@ -59,9 +68,10 @@ namespace RevitMCP.Addin.Tools
 
     [McpTool("revit_create_point_based_elements",
         Title = "创建点定位构件",
-        Description = "按插入点批量创建门、窗、家具等点定位构件。坐标一律用毫米。" +
+        Description = "按插入点批量创建门、窗、家具、柱等点定位构件。坐标一律用毫米。" +
                       "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
                       "门窗必须依附于墙：给 hostWallId，或把插入点放在墙上让工具自己找。" +
+                      "**柱请配 topLevelId 顶到标高**，而不是靠类型自带的高度。" +
                       "建之前先用 revit_list_types 确认对应的族已载入本项目——没载入的族无法创建。",
         Destructive = false,
         TimeoutSeconds = 120)]
@@ -115,7 +125,13 @@ namespace RevitMCP.Addin.Tools
 
             var instance = needsHost
                 ? CreateHosted(document, context, spec, index, symbol, level, aboveLevelMm)
-                : CreateFree(document, context, spec, index, symbol, level, aboveLevelMm);
+                : CreateFree(document, context, spec, index, symbol, level, aboveLevelMm, category);
+
+            var topLevel = CreateSupport.ResolveTopLevel(document, spec.TopLevelId, index);
+            if (topLevel != null)
+                ApplyColumnConstraint(instance, category, topLevel, spec.TopOffset ?? 0, context, index);
+            else if (spec.TopOffset.HasValue)
+                CreateSupport.Once(context, "topOffset 只在给了 topLevelId 时有效，已忽略。");
 
             ApplyFlips(document, instance, spec, context);
 
@@ -178,7 +194,8 @@ namespace RevitMCP.Addin.Tools
 
         private static FamilyInstance CreateFree(
             Document document, ToolExecutionContext<UIApplication> context,
-            PointBasedElementSpec spec, int index, FamilySymbol symbol, Level level, double aboveLevelMm)
+            PointBasedElementSpec spec, int index, FamilySymbol symbol, Level level, double aboveLevelMm,
+            BuiltInCategory category)
         {
             var point = new XYZ(
                 Units.ToFeet(spec.LocationPoint.X),
@@ -255,6 +272,34 @@ namespace RevitMCP.Addin.Tools
                 default:
                     return Autodesk.Revit.DB.Structure.StructuralType.NonStructural;
             }
+        }
+
+        /// <summary>
+        /// 柱的顶部约束。
+        ///
+        /// 柱和墙一样是竖向构件，"顶到哪条标高"是它的基本属性，
+        /// 而不是靠 baseOffset 把它抬到某个高度、再指望类型自带的高度正好合适。
+        /// 没有这个，一根柱子在层高改变时不会跟着变——模型和图纸当场脱节。
+        /// </summary>
+        private static void ApplyColumnConstraint(
+            FamilyInstance instance, BuiltInCategory category, Level topLevel, double topOffsetMm,
+            ToolExecutionContext<UIApplication> context, int index)
+        {
+            if (!IsColumn(category))
+                throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
+                    "topLevelId 只对柱有意义（" + BuiltInCategory.OST_StructuralColumns + " / " +
+                    BuiltInCategory.OST_Columns + "），收到 " + category +
+                    "。门窗的竖向位置用 baseOffset（窗台高度），家具用 baseOffset。");
+
+            CreateSupport.ApplyTopConstraint(
+                instance, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM,
+                BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM, topLevel, topOffsetMm, context);
+        }
+
+        private static bool IsColumn(BuiltInCategory category)
+        {
+            return category == BuiltInCategory.OST_StructuralColumns ||
+                   category == BuiltInCategory.OST_Columns;
         }
 
         private static Wall ResolveHostWall(

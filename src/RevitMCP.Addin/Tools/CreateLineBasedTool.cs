@@ -20,7 +20,7 @@ namespace RevitMCP.Addin.Tools
         [McpParam("定位线，坐标用毫米", Required = true)]
         public LocationLine LocationLine { get; set; }
 
-        [McpParam("高度，毫米。仅墙使用，默认 3000")]
+        [McpParam("高度，毫米。仅墙使用，默认 3000。给了 topLevelId 时忽略它")]
         public double? Height { get; set; }
 
         [McpParam("标高 ID，来自 revit_list_levels。省略则用活动视图所在标高")]
@@ -28,6 +28,16 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("相对标高的偏移，毫米，默认 0")]
         public double? BaseOffset { get; set; }
+
+        [McpParam("顶部标高 ID。给了它墙就顶到那条标高、并随它联动，**优先于 height**。" +
+                  "层高改了墙会跟着变，比按 height 硬写高度可靠得多")]
+        public string TopLevelId { get; set; }
+
+        [McpParam("相对顶部标高的偏移，毫米，默认 0。可为负（收到楼板底）。仅在给了 topLevelId 时有效")]
+        public double? TopOffset { get; set; }
+
+        [McpParam(WallReference.ParamDescription)]
+        public string LocationLineRef { get; set; }
 
         [McpParam("是否为结构构件。仅墙使用，默认 false（梁总是结构构件）")]
         public bool? Structural { get; set; }
@@ -47,6 +57,9 @@ namespace RevitMCP.Addin.Tools
         Description = "按定位线批量创建墙或梁。坐标和尺寸一律用毫米，原点与项目坐标系一致。" +
                       "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步——" +
                       "建一圈墙请一次调用传完，不要逐面调用。" +
+                      "墙的高度**优先用 topLevelId 顶到标高**，而不是写死 height：前者会随层高联动。" +
+                      "外皮尺寸直接照图给，配 locationLineRef: \"FinishFaceExterior\" 即可，" +
+                      "不要自己把轮廓往里挪半个墙厚。" +
                       "建之前先用 revit_list_types 挑类型、revit_list_levels 挑标高；" +
                       "建之后用 revit_get_warnings 复查有没有重叠。",
         Destructive = false,
@@ -108,13 +121,37 @@ namespace RevitMCP.Addin.Tools
             Document document, ToolExecutionContext<UIApplication> context,
             LineBasedElementSpec spec, int index, Line line, Level level, double offsetMm)
         {
-            var heightMm = spec.Height ?? DefaultWallHeightMm;
-            if (heightMm < Units.MinLength)
-                throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
-                    "墙高必须为正且不小于 " + Units.MinLength + " 毫米，收到 " + heightMm + "。");
-
             var wallType = CreateSupport.ResolveType<WallType>(
                 document, context, spec.TypeId, BuiltInCategory.OST_Walls, index);
+
+            var topLevel = CreateSupport.ResolveTopLevel(document, spec.TopLevelId, index);
+            var topOffsetMm = spec.TopOffset ?? 0;
+
+            // 顶标高优先：给了它，height 就是多余的输入，直接忽略并说一声。
+            // 两个都认会让"到底听谁的"变成一件要读文档才知道的事
+            double heightMm;
+            if (topLevel != null)
+            {
+                if (spec.Height.HasValue)
+                    CreateSupport.Once(context,
+                        "同时给了 topLevelId 和 height，以 topLevelId 为准，height 已忽略。");
+
+                heightMm = CreateSupport.RequireClearHeightMm(level, offsetMm, topLevel, topOffsetMm, index);
+            }
+            else
+            {
+                if (spec.TopOffset.HasValue)
+                    CreateSupport.Once(context, "topOffset 只在给了 topLevelId 时有效，已忽略。");
+
+                heightMm = spec.Height ?? DefaultWallHeightMm;
+                if (heightMm < Units.MinLength)
+                    throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
+                        "墙高必须为正且不小于 " + Units.MinLength + " 毫米，收到 " + heightMm + "。");
+            }
+
+            // Wall.Create 永远把传入的曲线当中心线，没有别的入口。
+            // 定位线是建完之后靠整体挪动实现的，详见 WallReference
+            var reference = WallReference.Parse(spec.LocationLineRef, index);
 
             Wall wall;
             try
@@ -139,8 +176,16 @@ namespace RevitMCP.Addin.Tools
                 throw CreateSupport.Failure(index, McpDomainError.TransactionFailed,
                     "Revit 未能创建墙，但也没有报错。请检查标高与墙类型是否匹配。");
 
+            var shiftMm = WallReference.Place(document, wall, wallType, reference, context, index);
+
+            if (topLevel != null)
+                CreateSupport.ApplyTopConstraint(
+                    wall, BuiltInParameter.WALL_HEIGHT_TYPE, BuiltInParameter.WALL_TOP_OFFSET,
+                    topLevel, topOffsetMm, context);
+
             return new CreatedElement
             {
+                LocationLineShiftMm = shiftMm == 0 ? (double?)null : Units.Round(shiftMm),
                 Index = index,
                 Id = wall.Id.ToProtocolString(),
                 Category = "OST_Walls",
@@ -158,6 +203,14 @@ namespace RevitMCP.Addin.Tools
                 CreateSupport.Once(context,
                     "梁没有「高度」这个概念，height 已被忽略。梁的截面尺寸由族类型决定，" +
                     "抬高用 baseOffset。");
+
+            if (!string.IsNullOrWhiteSpace(spec.TopLevelId) || spec.TopOffset.HasValue)
+                CreateSupport.Once(context,
+                    "梁是单标高构件，没有顶部约束，topLevelId / topOffset 已被忽略。用 baseOffset 抬高。");
+
+            if (!string.IsNullOrWhiteSpace(spec.LocationLineRef))
+                CreateSupport.Once(context,
+                    "locationLineRef 只对墙有意义（它说的是墙的哪个面），梁上已被忽略。");
 
             var symbol = CreateSupport.ResolveType<FamilySymbol>(
                 document, context, spec.TypeId, BuiltInCategory.OST_StructuralFraming, index);

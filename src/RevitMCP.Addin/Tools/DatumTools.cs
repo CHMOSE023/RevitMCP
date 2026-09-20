@@ -225,19 +225,22 @@ namespace RevitMCP.Addin.Tools
 
             var elevation = Units.ToFeet(spec.ElevationMm.Value);
 
-            // 同高程已有标高时 Revit 会照建不误，得到两个重叠的标高——
-            // 那是个几乎一定不是本意的结果，且事后极难发现
+            // 同高程已有标高时 Revit 会照建不误，得到两个在剖面里叠在一起的标高。
+            //
+            // 刻意只警告、不拒绝：Revit 本身允许这么做，确实也有正当用法
+            // （同一高程上分建筑标高与结构标高）。但**必须点名已经在那儿的是谁**——
+            // 光说"高程重复"，调用方无从判断这是不是一次重复创建。
             var duplicate = new FilteredElementCollector(document)
                 .OfClass(typeof(Level))
                 .Cast<Level>()
                 .FirstOrDefault(l => Math.Abs(l.Elevation - elevation) < Units.ToFeet(Units.MinLength));
 
             if (duplicate != null)
-                throw DatumFail.At(index, McpDomainError.InvalidParameter,
-                    "高程 " + Format(spec.ElevationMm.Value) + " 毫米处已经有标高「" +
+                CreateSupport.Once(context,
+                    "高程 " + Format(spec.ElevationMm.Value) + " 毫米上已经有标高「" +
                     AnnotationSupport.SafeName(duplicate) + "」（ID " +
-                    duplicate.Id.ToProtocolString() + "）。" +
-                    "重叠的标高会让后续建模选错标高，所以这里直接拒绝。");
+                    duplicate.Id.ToProtocolString() + "）了。" +
+                    "Revit 允许重合的标高，但它们在剖面里会叠在一起——确认这不是重复创建。");
 
             Level level;
             try
@@ -306,8 +309,12 @@ namespace RevitMCP.Addin.Tools
         // ==================== 共用 ====================
 
         /// <summary>
-        /// 改名。重名不让整批失败——批量建轴网时撞名是常态，
-        /// 为一个名字回滚掉已经建好的十几根轴线不划算。实际用了什么名字会说出来。
+        /// 改名。**失败要整批回滚，不能只警告。**
+        ///
+        /// 和"标高偏移设不上"不同：偏移设不上，构件还在正确的位置上；
+        /// 而一条本该叫「屋面」、实际叫「标高 5」的标高，调用方下一步就会按「屋面」
+        /// 去找它，然后找不到。名字是基准图元唯一的检索手段——
+        /// 悄悄用一个别的名字建出来，比建不出来更难查。
         /// </summary>
         private static void Rename(
             Element element, string wanted, int index,
@@ -320,14 +327,13 @@ namespace RevitMCP.Addin.Tools
             try
             {
                 element.Name = name;
-                return;
             }
             catch (Exception ex)
             {
-                CreateSupport.Once(context,
-                    "datums[" + index + "]：" + label + "没能设成「" + name + "」（" + ex.Message +
-                    "），保留了 Revit 的自动命名「" + AnnotationSupport.SafeName(element) + "」。" +
-                    label + "在项目内必须唯一。");
+                throw DatumFail.At(index, McpDomainError.InvalidParameter,
+                    label + "改成「" + name + "」失败：" + ex.Message +
+                    "。最常见的原因是这个名字已经被占用了——" +
+                    "标高用 revit_list_levels、轴网用 revit_query_elements 查 OST_Grids 确认。");
             }
         }
 

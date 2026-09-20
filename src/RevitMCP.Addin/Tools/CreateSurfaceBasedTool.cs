@@ -12,6 +12,11 @@ namespace RevitMCP.Addin.Tools
     {
         [McpParam("外轮廓，首尾相接的线段数组，至少 3 段。最后一段的终点必须回到第一段的起点", Required = true)]
         public List<LocationLine> OuterLoop { get; set; }
+
+        [McpParam("内环（洞口），每个内环的写法和 outerLoop 一样：首尾相接、至少 3 段。" +
+                  "梯井、管井、天井用它——**不要靠把楼板拆成几块来留洞**，" +
+                  "那样会留下一堆「楼板重叠」警告，而且洞的位置一改就得重建所有板")]
+        public List<List<LocationLine>> InnerLoops { get; set; }
     }
 
     public sealed class SurfaceBasedElementSpec
@@ -50,7 +55,9 @@ namespace RevitMCP.Addin.Tools
         Title = "创建面定位构件",
         Description = "按闭合边界批量创建楼板、屋顶或天花。坐标一律用毫米。" +
                       "整批要么全部建成、要么一个都不建，且在撤销栈里只占一步。" +
-                      "边界必须首尾相接形成闭合环；不闭合会被直接拒绝，并告诉你断在哪一段。",
+                      "边界必须首尾相接形成闭合环；不闭合会被直接拒绝，并告诉你断在哪一段。" +
+                      "**要留洞（梯井、管井、天井）就用 boundary.innerLoops**，" +
+                      "不要把一块板拆成几块去绕开——那样会留下一串「楼板重叠」警告。",
         Destructive = false,
         TimeoutSeconds = 120)]
     public sealed class CreateSurfaceBasedTool : RevitTool<CreateSurfaceBasedInput, CreateElementsOutput>
@@ -92,9 +99,10 @@ namespace RevitMCP.Addin.Tools
             var category = ParseCategoryAt(spec.Category, index);
             var level = CreateSupport.ResolveLevel(document, context, spec.LevelId, index);
             var boundary = BuildBoundary(spec.Boundary, context, index);
+            var innerLoops = BuildInnerLoops(spec.Boundary, context, index);
             var offsetMm = spec.BaseOffset ?? 0;
 
-            Element created;
+            SurfaceCompat.CreateSurfaceResult result;
             ElementType usedType;
 
             switch (category)
@@ -102,19 +110,19 @@ namespace RevitMCP.Addin.Tools
                 case BuiltInCategory.OST_Floors:
                     usedType = CreateSupport.ResolveType<FloorType>(
                         document, context, spec.TypeId, BuiltInCategory.OST_Floors, index);
-                    created = Invoke(index, "楼板", () => SurfaceCompat.CreateFloor(
-                        document, boundary, usedType, level, spec.Structural ?? false));
+                    result = Invoke(index, "楼板", () => SurfaceCompat.CreateFloor(
+                        document, boundary, innerLoops, usedType, level, spec.Structural ?? false));
                     if (offsetMm != 0)
-                        ApplyOffset(created, BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM, offsetMm, context);
+                        ApplyOffset(result.Element, BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM, offsetMm, context);
                     break;
 
                 case BuiltInCategory.OST_Roofs:
                     usedType = CreateSupport.ResolveType<RoofType>(
                         document, context, spec.TypeId, BuiltInCategory.OST_Roofs, index);
-                    created = Invoke(index, "屋顶", () => SurfaceCompat.CreateRoof(
-                        document, boundary, (RoofType)usedType, level));
+                    result = Invoke(index, "屋顶", () => SurfaceCompat.CreateRoof(
+                        document, boundary, innerLoops, (RoofType)usedType, level));
                     if (offsetMm != 0)
-                        ApplyOffset(created, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM, offsetMm, context);
+                        ApplyOffset(result.Element, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM, offsetMm, context);
                     break;
 
                 case BuiltInCategory.OST_Ceilings:
@@ -125,10 +133,10 @@ namespace RevitMCP.Addin.Tools
 
                     usedType = CreateSupport.ResolveType<ElementType>(
                         document, context, spec.TypeId, BuiltInCategory.OST_Ceilings, index);
-                    created = Invoke(index, "天花", () => SurfaceCompat.CreateCeiling(
-                        document, boundary, usedType, level));
+                    result = Invoke(index, "天花", () => SurfaceCompat.CreateCeiling(
+                        document, boundary, innerLoops, usedType, level));
                     if (offsetMm != 0)
-                        ApplyOffset(created, BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM, offsetMm, context);
+                        ApplyOffset(result.Element, BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM, offsetMm, context);
                     break;
 
                 default:
@@ -136,10 +144,18 @@ namespace RevitMCP.Addin.Tools
                         "面定位建模只支持 OST_Floors、OST_Roofs、OST_Ceilings，收到 " + category + "。");
             }
 
+            // 洞是轮廓自带的还是事后开的，在后续查询里是两种东西：
+            // 后者会多出 Opening 构件，按类别查楼板时看不见它们
+            if (result.OpeningsCreated > 0)
+                CreateSupport.Once(context,
+                    "本版本的 API 不支持带洞轮廓，" + result.OpeningsCreated +
+                    " 个洞是建完之后单独开的，模型里会多出同样数量的「洞口」构件。" +
+                    "删除宿主时它们会跟着走，但按类别查询时不会出现在楼板/屋顶里。");
+
             return new CreatedElement
             {
                 Index = index,
-                Id = created.Id.ToProtocolString(),
+                Id = result.Element.Id.ToProtocolString(),
                 Category = category.ToString(),
                 Type = CreateSupport.SafeName(usedType),
                 Level = CreateSupport.SafeName(level)
@@ -160,11 +176,42 @@ namespace RevitMCP.Addin.Tools
                 throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
                     "缺少 boundary.outerLoop。");
 
-            var segments = boundary.OuterLoop;
+            return BuildLoop(boundary.OuterLoop, "outerLoop", context, index);
+        }
 
+        /// <summary>
+        /// 内环就是洞。校验规则和外轮廓**完全一样**，所以走同一段代码——
+        /// 两套校验迟早会长歪：一边容忍 1 毫米的缺口另一边不容忍，
+        /// 这种差异没人查得出来。
+        /// </summary>
+        private static List<IList<Curve>> BuildInnerLoops(
+            SurfaceBoundary boundary, ToolExecutionContext<UIApplication> context, int index)
+        {
+            var loops = new List<IList<Curve>>();
+            if (boundary?.InnerLoops == null || boundary.InnerLoops.Count == 0) return loops;
+
+            for (var i = 0; i < boundary.InnerLoops.Count; i++)
+            {
+                var segments = boundary.InnerLoops[i];
+                if (segments == null || segments.Count == 0)
+                    throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
+                        "boundary.innerLoops[" + i + "] 是空的。不需要洞就别给这一项。");
+
+                loops.Add(BuildLoop(segments, "innerLoops[" + i + "]", context, index));
+            }
+
+            return loops;
+        }
+
+        /// <param name="label">出错时指回入参的路径。批量创建是全有全无的，
+        /// 模型必须知道是哪个环的哪一段出的问题。</param>
+        private static List<Curve> BuildLoop(
+            List<LocationLine> segments, string label,
+            ToolExecutionContext<UIApplication> context, int index)
+        {
             if (segments.Count < MinSegments)
                 throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
-                    "boundary.outerLoop 至少要有 " + MinSegments + " 段才能围成一个面，收到 " +
+                    "boundary." + label + " 至少要有 " + MinSegments + " 段才能围成一个环，收到 " +
                     segments.Count + " 段。");
 
             var flattened = false;
@@ -175,14 +222,14 @@ namespace RevitMCP.Addin.Tools
                 var segment = segments[i];
                 if (segment?.P0 == null || segment.P1 == null)
                     throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
-                        "boundary.outerLoop[" + i + "] 需要 p0 和 p1 两个点。");
+                        "boundary." + label + "[" + i + "] 需要 p0 和 p1 两个点。");
 
                 if ((segment.P0.Z ?? 0) != 0 || (segment.P1.Z ?? 0) != 0) flattened = true;
 
                 var lengthMm = CreateSupport.Distance(segment.P0, segment.P1);
                 if (lengthMm < Units.MinLength)
                     throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
-                        "boundary.outerLoop[" + i + "] 的两端相距 " +
+                        "boundary." + label + "[" + i + "] 的两端相距 " +
                         lengthMm.ToString("0.###", CultureInfo.InvariantCulture) +
                         " 毫米，太短，Revit 无法接受。");
 
@@ -193,7 +240,7 @@ namespace RevitMCP.Addin.Tools
                     Units.Point(segment.P1.X, segment.P1.Y, 0)));
             }
 
-            RequireClosed(segments, index);
+            RequireClosed(segments, label, index);
 
             if (flattened)
                 CreateSupport.Once(context,
@@ -202,7 +249,7 @@ namespace RevitMCP.Addin.Tools
             return curves;
         }
 
-        private static void RequireClosed(List<LocationLine> segments, int index)
+        private static void RequireClosed(List<LocationLine> segments, string label, int index)
         {
             for (var i = 0; i < segments.Count; i++)
             {
@@ -214,8 +261,8 @@ namespace RevitMCP.Addin.Tools
 
                 var isWrap = i == segments.Count - 1;
                 var what = isWrap
-                    ? "边界没有闭合：最后一段 outerLoop[" + i + "] 的终点没有回到第一段的起点"
-                    : "边界断开：outerLoop[" + i + "] 的终点与 outerLoop[" + (i + 1) + "] 的起点不相接";
+                    ? "边界没有闭合：最后一段 " + label + "[" + i + "] 的终点没有回到第一段的起点"
+                    : "边界断开：" + label + "[" + i + "] 的终点与 " + label + "[" + (i + 1) + "] 的起点不相接";
 
                 throw CreateSupport.Failure(index, McpDomainError.InvalidParameter,
                     what + "——" + current.P1 + " 与 " + next.P0 + " 相距 " +
@@ -224,12 +271,13 @@ namespace RevitMCP.Addin.Tools
             }
         }
 
-        private static Element Invoke(int index, string what, Func<Element> create)
+        private static SurfaceCompat.CreateSurfaceResult Invoke(
+            int index, string what, Func<SurfaceCompat.CreateSurfaceResult> create)
         {
-            Element created;
+            SurfaceCompat.CreateSurfaceResult result;
             try
             {
-                created = create();
+                result = create();
             }
             catch (Exception ex)
             {
@@ -237,11 +285,11 @@ namespace RevitMCP.Addin.Tools
                     "Revit 拒绝创建该" + what + "：" + ex.Message);
             }
 
-            if (created == null)
+            if (result?.Element == null)
                 throw CreateSupport.Failure(index, McpDomainError.TransactionFailed,
                     "Revit 未能创建" + what + "，但也没有报错。请检查边界是否自相交。");
 
-            return created;
+            return result;
         }
 
         /// <summary>

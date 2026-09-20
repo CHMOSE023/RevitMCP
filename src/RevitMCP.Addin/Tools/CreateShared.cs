@@ -67,6 +67,12 @@ namespace RevitMCP.Addin.Tools
 
         [McpParam("长度，毫米。仅线定位构件有")]
         public double? LengthMm { get; set; }
+
+        [McpParam("按 locationLineRef 把墙从给定定位线上整体挪开的距离，毫米。未用定位线时为 null。" +
+                  "**它只说挪了多远，不说挪对了方向**——要确认内外侧，" +
+                  "用 revit_get_element_geometry 量一圈墙的包围盒：" +
+                  "外表面定位时它应当正好等于图纸上的外轮廓尺寸，大了一个墙厚就是方向反了")]
+        public double? LocationLineShiftMm { get; set; }
     }
 
     public sealed class CreateElementsOutput : IReportsAffectedElements
@@ -328,5 +334,94 @@ namespace RevitMCP.Addin.Tools
             catch { return null; }
         }
 
+        // ==================== [M10] 标高约束 ====================
+
+        /// <summary>
+        /// 解析可选的顶部标高。没给就返回 null（表示"用 height / 类型默认高度"）。
+        /// </summary>
+        public static Level ResolveTopLevel(Document document, string rawId, int index)
+        {
+            if (string.IsNullOrWhiteSpace(rawId)) return null;
+
+            var element = RequireElement(document, rawId, index);
+            var level = element as Level;
+
+            if (level == null)
+                throw Failure(index, McpDomainError.InvalidParameter,
+                    "topLevelId " + rawId + " 不是标高，而是「" +
+                    (element.Category?.Name ?? element.GetType().Name) +
+                    "」。用 revit_list_levels 取标高 ID。");
+
+            return level;
+        }
+
+        /// <summary>
+        /// 由"底标高 + 底偏移"和"顶标高 + 顶偏移"算出净高，顺便把顺序搞反的情况拦下来。
+        ///
+        /// **算出来的高度仍然要用在几何上**，而不是只把顶部约束参数设上就完事：
+        /// 参数设不上的时候（某些族没有这个参数），几何至少还是对的。
+        /// 反过来先设参数、指望 Revit 去调几何，参数一旦失败构件就停在默认高度，
+        /// 而这个偏差不会报错——正是最难查的那一类。
+        /// </summary>
+        public static double RequireClearHeightMm(
+            Level baseLevel, double baseOffsetMm, Level topLevel, double topOffsetMm, int index)
+        {
+            var bottomMm = Units.FromFeet(baseLevel.Elevation) + baseOffsetMm;
+            var topMm = Units.FromFeet(topLevel.Elevation) + topOffsetMm;
+            var heightMm = topMm - bottomMm;
+
+            if (heightMm < Units.MinLength)
+                throw Failure(index, McpDomainError.InvalidParameter,
+                    "顶标高「" + SafeName(topLevel) + "」加偏移后在 " + Format(topMm) +
+                    " 毫米，不高于底标高「" + SafeName(baseLevel) + "」加偏移后的 " + Format(bottomMm) +
+                    " 毫米，算出的高度是 " + Format(heightMm) + " 毫米。" +
+                    "顶标高要在底标高之上，两者至少相差 " + Units.MinLength + " 毫米。");
+
+            return heightMm;
+        }
+
+        /// <summary>
+        /// 把顶部约束写成参数，让构件真正随标高联动。
+        ///
+        /// 设不上只警告：几何高度已经按 <see cref="RequireClearHeightMm"/> 算对了，
+        /// 构件在正确的位置上，丢的只是"改标高时自动跟着变"这件事。
+        /// 为它把整批回滚，代价大于收益——但必须说出来，
+        /// 否则用户调层高时会发现有几片墙没跟着动，而且不知道为什么。
+        /// </summary>
+        public static void ApplyTopConstraint(
+            Element element, BuiltInParameter levelParam, BuiltInParameter offsetParam,
+            Level topLevel, double topOffsetMm, ToolExecutionContext<UIApplication> context)
+        {
+            if (!TrySet(element, levelParam, parameter => parameter.Set(topLevel.Id)))
+            {
+                Once(context,
+                    "构件 " + element.Id.ToProtocolString() + " 的顶部约束没能设到标高「" +
+                    SafeName(topLevel) + "」。它的高度是对的，但不会随标高联动。");
+                return;
+            }
+
+            if (topOffsetMm != 0 &&
+                !TrySet(element, offsetParam, parameter => parameter.Set(Units.ToFeet(topOffsetMm))))
+            {
+                Once(context,
+                    "构件 " + element.Id.ToProtocolString() + " 的顶部偏移没能设成 " +
+                    Format(topOffsetMm) + " 毫米。");
+            }
+        }
+
+        private static bool TrySet(Element element, BuiltInParameter id, Func<Parameter, bool> set)
+        {
+            try
+            {
+                var parameter = element.get_Parameter(id);
+                return parameter != null && !parameter.IsReadOnly && set(parameter);
+            }
+            catch { return false; }
+        }
+
+        internal static string Format(double value)
+        {
+            return value.ToString("0.###", CultureInfo.InvariantCulture);
+        }
     }
 }

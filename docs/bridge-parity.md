@@ -3,7 +3,7 @@
 > 本文档由 `build/check-parity.ps1` 生成并校验，改了工具名会当场对不上。
 
 `revit-bridge-addin` 共 **112** 条命令（其中 7 条在它那边是 `not_implemented` 桩）。
-RevitMCP 用 **68** 个工具覆盖其中 **110** 条；**2** 条明确不做，理由在表里写着。
+RevitMCP 用 **69** 个工具覆盖其中 **110** 条；**2** 条明确不做，理由在表里写着。
 
 命令数比工具数多，是因为本项目**按几何形态与操作语义归并**：
 `move` / `copy` / `rotate` / `mirror` 在 Revit 里是同一个 `ElementTransformUtils`

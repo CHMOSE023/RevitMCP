@@ -93,6 +93,31 @@ function Check {
     if ($Detail) { Write-Host "  $Detail" -ForegroundColor DarkGray } else { Write-Host "" }
 }
 
+function Invoke-Safely {
+    <#
+    .SYNOPSIS
+        调用一个工具，把"这个工具根本不存在"变成一条失败记录，而不是一个异常。
+
+        版本错位是这个脚本最常见的处境：源码里加了新工具，Revit 里装的还是旧插件。
+        让它当场抛异常，末尾的清理就跑不到了——这一趟造出来的几十个构件
+        会全部留在用户的模型里。实测踩过一次，留下了一串重复房间。
+    #>
+    param([PSCustomObject] $Session, [string] $Name, [hashtable] $Arguments)
+
+    try {
+        return Invoke-RevitTool $Session $Name $Arguments
+    }
+    catch {
+        return [PSCustomObject]@{
+            IsError  = $true
+            Code     = 'TOOL_UNAVAILABLE'
+            Data     = $null
+            Text     = "调用不到 $Name —— 多半是 Revit 里装的插件还是旧版本。原始错误：$($_.Exception.Message)"
+            Warnings = @()
+        }
+    }
+}
+
 function Expect-Ok {
     <#
     .SYNOPSIS
@@ -101,7 +126,7 @@ function Expect-Ok {
     #>
     param([PSCustomObject] $Session, [string] $Name, [hashtable] $Arguments = @{}, [string] $What)
 
-    $result = Invoke-RevitTool $Session $Name $Arguments
+    $result = Invoke-Safely $Session $Name $Arguments
     Write-ToolWarnings $result '     '
 
     $label = $What
@@ -125,9 +150,10 @@ function Expect-Refusal {
     #>
     param([PSCustomObject] $Session, [string] $Name, [hashtable] $Arguments, [string] $Code, [string] $What)
 
-    $result = Invoke-RevitTool $Session $Name $Arguments
+    $result = Invoke-Safely $Session $Name $Arguments
 
-    $ok = [bool] $result.IsError
+    # 工具不存在不算"被正确拒绝"——那是装错了版本，不是契约生效
+    $ok = ([bool] $result.IsError) -and ($result.Code -ne 'TOOL_UNAVAILABLE')
     if ($ok -and $Code) { $ok = ($result.Code -eq $Code) }
 
     if ($ok) {
@@ -534,11 +560,21 @@ Expect-Refusal $session 'revit_open_document' @{ action = '随便写的' } `
 Expect-Refusal $session 'revit_close_document' @{ documentId = '不存在的文档' } `
     'ELEMENT_NOT_FOUND' '关闭不存在的文档被拒绝'
 
+# 另存收的是完整路径（与各类导出只收文件名不同）。下面三条都不碰磁盘
+Expect-Refusal $session 'revit_save_document_as' @{ path = '办公楼.rvt' } `
+    'INVALID_PARAMETER' '另存给相对路径被拒绝'
+
+Expect-Refusal $session 'revit_save_document_as' @{ path = 'D:\绝不可能存在的目录\x.rvt' } `
+    'INVALID_PARAMETER' '另存到不存在的目录被拒绝（工具不替你建目录）'
+
+Expect-Refusal $session 'revit_save_document_as' @{ path = 'D:\x.dwg' } `
+    'INVALID_PARAMETER' '另存的扩展名必须是 .rvt'
+
 # 当前是未保存的新文档，原地保存无处可存——工具应当说清楚而不是抛个裸异常
 $docInfo = Invoke-RevitTool $session 'revit_get_document_info' -ThrowOnError
 if (-not $docInfo.Data.pathName) {
     Expect-Refusal $session 'revit_save_document' @{} `
-        'INVALID_PARAMETER' '从未保存过的文档做原地保存被拒绝'
+        $null '从未保存过的文档做原地保存被拒绝（没有路径可存）'
 }
 
 # 两道闸的**顺序**是有讲究的：「这不是工作共享模型」排在「你还没确认」前面。
@@ -562,9 +598,10 @@ if ($IncludeLifecycle) {
     $answer = Read-Host "  确认继续？(y/N)"
     if ($answer -eq 'y') {
         $copy = Join-Path ([IO.Path]::GetTempPath()) "m10-副本-$(Get-Date -Format 'HHmmss').rvt"
-        Expect-Ok $session 'revit_save_document' @{ saveAsPath = $copy } "另存为 $copy"
-        Expect-Refusal $session 'revit_save_document' @{ saveAsPath = $copy } `
-            'CONFIRMATION_REQUIRED' '覆盖已有文件需要显式 overwrite'
+        Expect-Ok $session 'revit_save_document_as' @{ path = $copy } "另存为 $copy"
+
+        Expect-Refusal $session 'revit_save_document_as' @{ path = $copy } `
+            'INVALID_PARAMETER' '覆盖已有文件需要显式 overwrite'
     }
     else { Write-Host "  已跳过。" -ForegroundColor DarkGray }
 }

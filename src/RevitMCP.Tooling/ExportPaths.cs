@@ -5,31 +5,41 @@ using System.Linq;
 namespace RevitMCP.Tooling
 {
     /// <summary>
-    /// 导出文件的落盘位置。
+    /// 落盘文件的位置。
     ///
-    /// **这是整个服务里第一类会在模型之外留下痕迹的操作**，所以路径不能由调用方说了算。
+    /// **这是整个服务里会在模型之外留下痕迹的那一类操作**，所以路径不能由调用方说了算。
     /// 模型拿到的是一个文件名，不是一个路径：不接受目录分隔符、不接受 <c>..</c>、
-    /// 不接受盘符或 UNC 前缀，最终一律落在导出根目录下。
+    /// 不接受盘符或 UNC 前缀，最终一律落在根目录下。
     ///
     /// 这不是防"模型会使坏"，而是防**模型被喂了坏数据**——
     /// 文件名很可能来自它刚读过的某个构件名、某段用户输入。
     /// 写坏用户的文件是不可逆的，而限制目录几乎不损失可用性：
     /// 位置固定，用户和 Claude Code 都知道去哪儿找。
+    ///
+    /// **[M10] 扩展名白名单改为按调用点传入。** 起初这里只服务 <c>revit_export_image</c>，
+    /// 图片扩展名写死在类里就够了。M10 加入 <c>revit_save_document_as</c> 后落盘的是 .rvt，
+    /// 而"能写图片"和"能写模型"该由各自的工具声明，不该让这个类替它们记住。
+    /// 白名单本身一条都没放宽：仍然是白名单而非黑名单。
     /// </summary>
     public static class ExportPaths
     {
-        /// <summary>允许的图片扩展名。白名单而非黑名单——能写 .exe 到磁盘的工具不该存在。</summary>
+        /// <summary>图片扩展名。<c>revit_export_image</c> 用的就是这一组。</summary>
         public static readonly string[] ImageExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" };
 
-        /// <summary>允许的模型与图纸交付格式。</summary>
+        /// <summary>模型与图纸的交付格式。<c>revit_export_documents</c> 用。</summary>
         public static readonly string[] DocumentExtensions = { ".dwg", ".dxf", ".ifc", ".nwc", ".pdf" };
 
-        /// <summary>允许的表格格式。明细表导出用。</summary>
+        /// <summary>表格格式。<c>revit_export_schedules</c> 用。</summary>
         public static readonly string[] TableExtensions = { ".csv", ".txt", ".tsv" };
 
+        /// <summary>Revit 项目文件扩展名。另存模型时用。</summary>
+        public static readonly string[] ProjectExtensions = { ".rvt" };
+
         /// <summary>
-        /// 把调用方给的文件名解析成导出根目录下的绝对路径，顺便建好目录。
+        /// 把调用方给的文件名解析成根目录下的绝对路径，顺便建好目录。
         /// 任何越界企图都当场失败，并说清楚规则——模型据此能一次改对。
+        ///
+        /// 不带 <c>allowedExtensions</c> 的重载沿用图片白名单，保持既有调用点不变。
         /// </summary>
         public static string Resolve(string root, string fileName, string defaultExtension)
         {
@@ -39,15 +49,20 @@ namespace RevitMCP.Tooling
         /// <summary>
         /// 同上，但由调用方指定允许的扩展名。
         ///
-        /// 白名单跟着导出工具走，而不是全局合并成一份：
-        /// 导图片的工具不该能写出 .dwg，导 DWG 的也不该能写出 .pdf——
+        /// 白名单跟着调用点走，而不是全局合并成一份：
+        /// 导图片的工具不该能写出 .dwg，导 DWG 的也不该能写出 .pdf，
+        /// 能存模型的更不该顺手能写图片——
         /// 扩展名与实际内容对不上的文件，下游拿到才会发现。
         /// </summary>
+        /// <param name="allowedExtensions">
+        /// 允许的扩展名（小写，带点）。**能写 .exe 到磁盘的工具不该存在**，所以这里永远是白名单。
+        /// </param>
         public static string Resolve(
             string root, string fileName, string defaultExtension, string[] allowedExtensions)
         {
             if (allowedExtensions == null || allowedExtensions.Length == 0)
-                throw new ToolFailureException(McpDomainError.InvalidParameter, "未指定允许的扩展名。");
+                throw new ToolFailureException(McpDomainError.InvalidParameter,
+                    "内部错误：未声明允许的扩展名。");
 
             if (string.IsNullOrWhiteSpace(root))
                 throw new ToolFailureException(McpDomainError.InvalidParameter, "导出根目录未配置。");
